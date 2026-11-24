@@ -52,9 +52,10 @@ const MEASURE_FONT_ORIGINAL =
 const MEASURE_FONT_PATCHED =
   'C = g.fontBoundingBoxAscent || g.actualBoundingBoxAscent || this.fontSize * 0.8, I = g.fontBoundingBoxDescent || this.fontSize * 0.2, D = Math.ceil(C + I), i = Math.round(C + (D - C - I) / 2);';
 
-// Draw Powerline separators and block elements as shapes that fill the cell
-// (webview/sprites.ts), and snap cell and row backgrounds to device pixels so
-// neighbouring cells meet without seams at fractional scales.
+// Renderer and link patches. Draw Powerline separators and block elements as
+// shapes that fill the cell (webview/sprites.ts), and snap cell and row
+// backgrounds to device pixels so neighbouring cells meet without seams at
+// fractional scales.
 const SPRITES = join(root, 'webview', 'sprites.ts');
 const RENDER_PATCHES = [
   {
@@ -74,6 +75,23 @@ const RENDER_PATCHES = [
     count: 1,
     from: 'this.ctx.fillText(N, w, s)',
     to: '(__gtyDrawSprite(this.ctx, N, E, C, I, this.metrics.height, this.devicePixelRatio) || this.ctx.fillText(N, w, s))',
+  },
+  // OSC 8: every linked cell reports hyperlink id 1, whatever the URI. The link
+  // cache keyed links by that id, so all OSC 8 links on screen shared one entry
+  // (the last one scanned won); key them by range instead. Hovering one link
+  // also underlined every linked cell; leave the underline to the hovered
+  // link's own range.
+  {
+    what: 'link cache key',
+    count: 1,
+    from: '      const i = D.getHyperlinkId();\n      if (i > 0) {\n        this.linkCache.set(`h${i}`, A);',
+    to: '      const i = 0;\n      if (i > 0) {\n        this.linkCache.set(`h${i}`, A);',
+  },
+  {
+    what: 'hovered hyperlink id',
+    count: 1,
+    from: 'D && g >= 0 && g < D.length && (I = D[g].hyperlink_id);',
+    to: 'D && g >= 0 && g < D.length && (I = 0);',
   },
 ];
 

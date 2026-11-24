@@ -17,7 +17,14 @@ export function parseFileLink(text: string): ParsedFileLink {
     try {
       t = fileURLToPath(t);
     } catch {
-      /* keep text as is */
+      // fileURLToPath rejects hosts other than localhost on POSIX, but
+      // `ls --hyperlink` and others write file://<hostname>/path.
+      const m = /^file:\/\/[^/]*(\/.*)$/.exec(t);
+      try {
+        if (m) t = decodeURIComponent(m[1]);
+      } catch {
+        /* keep text as is */
+      }
     }
   }
   let m = /^(.*?)\((\d+)(?:,\s*(\d+))?\)$/.exec(t);

@@ -309,6 +309,43 @@ test('window.open from link providers is routed to the host', async () => {
   await page.close();
 });
 
+test('Ctrl+click on a URL, a file path or an OSC 8 hyperlink opens it through the host', async () => {
+  const page = await openTerminal();
+  // Two OSC 8 links on one line: ghostty-web gives every linked cell the same
+  // hyperlink id, so each must still open its own URI.
+  const text = 'see https://example.com/x and src/extension.ts:10 here osc-label next-label';
+  const osc8 = (label: string, uri: string) => `\x1b]8;;${uri}\x1b\\${label}\x1b]8;;\x1b\\`;
+  await output(
+    page,
+    `${text.replace('osc-label', osc8('osc-label', 'https://example.com/osc')).replace('next-label', osc8('next-label', 'file://somehost/tmp/x.txt'))}\r\n`,
+  );
+  await page.waitForFunction((t) => (window as any).__gty.text().includes(t), text);
+  /** Centre of the cell at column `col` of row 0, in page coordinates. */
+  const cell = (col: number) =>
+    page.evaluate((c) => {
+      const { width, height } = (window as any).__gty.term.renderer.metrics as { width: number; height: number };
+      const r = (document.querySelector('#terminal canvas') as HTMLCanvasElement).getBoundingClientRect();
+      return { x: r.left + (c + 0.5) * width, y: r.top + 0.5 * height };
+    }, col);
+  for (const [target, expected] of [
+    ['example.com', { type: 'openLink', kind: 'url', text: 'https://example.com/x' }],
+    ['extension.ts', { type: 'openLink', kind: 'file', text: 'src/extension.ts:10' }],
+    ['osc-label', { type: 'openLink', kind: 'url', text: 'https://example.com/osc' }],
+    ['next-label', { type: 'openLink', kind: 'url', text: 'file://somehost/tmp/x.txt' }],
+  ] as const) {
+    await clearSent(page);
+    const { x, y } = await cell(text.indexOf(target) + 2);
+    await page.mouse.move(x, y);
+    await page.keyboard.down('Control');
+    await page.mouse.click(x, y);
+    await page.keyboard.up('Control');
+    await page.waitForTimeout(200);
+    const opened = (await sent(page)).filter((m) => m.type === 'openLink');
+    assert.deepEqual(opened, [expected], `Ctrl+click on ${target}: ${JSON.stringify(opened)} links ${JSON.stringify(await page.evaluate(() => (window as any).__gty.hyperlinks))}`);
+  }
+  await page.close();
+});
+
 test('state persisted by the host is stored for the serializer', async () => {
   const page = await openTerminal();
   await page.evaluate(() => window.postMessage({ type: 'persist', state: { cwd: '/tmp', title: 'x' } }, '*'));

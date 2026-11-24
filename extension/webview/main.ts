@@ -8,6 +8,7 @@ import type { HostToWebview, PersistedState, WebviewConfig, WebviewToHost } from
 import { preparePaste } from '../src/shared/paste';
 import { findFileLinks } from './fileLinks';
 import { FindController } from './find';
+import { cellRuns, Hyperlinks, splitHyperlinks } from './hyperlinks';
 import { PromptMarks } from './marks';
 import { readTheme, sameTheme } from './theme';
 
@@ -34,6 +35,7 @@ let shellKeys = new KeyMatcher([]);
 let chordPending = false;
 let exited = false;
 const marks = new PromptMarks();
+const hyperlinks = new Hyperlinks();
 let find: FindController | undefined;
 /** Events the workbench should see; everything else stops at the document. */
 const toWorkbench = new WeakSet<Event>();
@@ -81,6 +83,7 @@ function buildTerminal(): void {
   term?.dispose();
   container.replaceChildren();
   marks.clear();
+  hyperlinks.clear();
   theme = computeTheme();
   document.body.style.backgroundColor = theme.background ?? '';
 
@@ -122,6 +125,28 @@ function buildTerminal(): void {
       callback(links.length ? links : undefined);
     },
   });
+  // OSC 8 hyperlinks: ghostty-web's own provider cannot resolve their URIs.
+  t.registerLinkProvider({
+    provideLinks(y, callback) {
+      const line = t.buffer.active.getLine(y);
+      if (!line) return callback(undefined);
+      const linked: boolean[] = [];
+      for (let x = 0; x < line.length; x++) linked.push((line.getCell(x)?.getHyperlinkId() ?? 0) !== 0);
+      const links: ILink[] = [];
+      for (const run of cellRuns(linked)) {
+        const rec = hyperlinks.find(t, y, run);
+        if (!rec) continue;
+        links.push({
+          text: rec.uri,
+          range: { start: { x: run.start, y }, end: { x: run.end - 1, y } },
+          activate(ev: MouseEvent) {
+            if (linkModifierHeld(ev)) post({ type: 'openLink', kind: 'url', text: rec.uri });
+          },
+        });
+      }
+      callback(links.length ? links : undefined);
+    },
+  });
   find = new FindController(t, document.getElementById('find') as HTMLDivElement);
 
   post({ type: 'resize', cols: t.cols, rows: t.rows });
@@ -137,7 +162,10 @@ function writeOutput(data: Uint8Array): void {
   const t = term;
   if (!t) return;
   for (const segment of marks.split(data)) {
-    if (segment.bytes.length) t.write(segment.bytes);
+    for (const part of splitHyperlinks(segment.bytes)) {
+      if (part.bytes.length) t.write(part.bytes);
+      if (part.linkAfter !== undefined) hyperlinks.record(t, part.linkAfter);
+    }
     if (segment.markAfter) marks.record(t, segment.markAfter);
   }
   find?.invalidate();
@@ -334,6 +362,7 @@ function clearTerminal(): void {
   // Like the built-in: keep the prompt line, drop everything above it.
   term?.clear();
   marks.clear();
+  hyperlinks.clear();
 }
 
 function scrollToCommand(direction: 'previous' | 'next'): void {
@@ -401,6 +430,7 @@ window.addEventListener('message', (event: MessageEvent<HostToWebview>) => {
     case 'replay':
       term?.reset();
       marks.clear();
+      hyperlinks.clear();
       if (msg.truncated) term?.write('\x1b[2m[earlier output not kept]\x1b[0m\r\n');
       writeOutput(msg.data);
       post({ type: 'ack', bytes: msg.data.length });
@@ -468,6 +498,9 @@ if ((window as unknown as { __gtyEnableTestHooks?: boolean }).__gtyEnableTestHoo
     },
     get marks() {
       return marks.all;
+    },
+    get hyperlinks() {
+      return hyperlinks.all;
     },
     text: () => visibleText(),
   };

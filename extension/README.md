@@ -36,6 +36,7 @@ Ctrl+click (Cmd+click on macOS) opens:
 
 - web links, through VS Code, so `localhost` links are forwarded when you work remotely;
 - file paths such as `src/main.rs:10:5`, at the given line and column.
+- OSC 8 hyperlinks (text that a program marks as a link, as `ls --hyperlink`, `gcc` and `systemctl` do), to the URL or file they point at.
 
 ## Settings
 

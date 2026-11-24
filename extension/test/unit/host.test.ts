@@ -167,5 +167,6 @@ test('file link parsing', () => {
   assert.deepEqual(parseFileLink('a.py(7,2)'), { path: 'a.py', line: 7, col: 2 });
   assert.deepEqual(parseFileLink('"./x.rs:9"'), { path: './x.rs', line: 9, col: undefined });
   assert.deepEqual(parseFileLink('/etc/hosts'), { path: '/etc/hosts' });
+  assert.deepEqual(parseFileLink('file://myhost/home/u/notes.md'), { path: '/home/u/notes.md' });
   assert.deepEqual(parseFileLink('file:///tmp/a%20b.txt'), { path: '/tmp/a b.txt' });
 });

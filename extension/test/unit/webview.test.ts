@@ -4,6 +4,7 @@ import { defaultPassThrough, KeyMatcher, keyName, parseKey } from '../../src/sha
 import { parseWebviewMessage } from '../../src/shared/messages';
 import { isMultiline, preparePaste } from '../../src/shared/paste';
 import { findFileLinks } from '../../webview/fileLinks';
+import { cellRuns, findLink, splitHyperlinks } from '../../webview/hyperlinks';
 import { PromptMarks } from '../../webview/marks';
 import { normalizeColor } from '../../webview/theme';
 
@@ -84,4 +85,32 @@ test('prompt mark splitting', () => {
   assert.equal(segs[3].bytes.length, 0);
   // An unterminated sequence stays in one piece.
   assert.equal(m.split(enc.encode('a\x1b]133;A')).length, 1);
+});
+
+test('splitHyperlinks ends a segment at each OSC 8 sequence', () => {
+  const enc = (t: string) => new TextEncoder().encode(t);
+  const dec = (b: Uint8Array) => new TextDecoder().decode(b);
+  const parts = splitHyperlinks(enc('a\x1b]8;;https://x.example/1\x1b\\link\x1b]8;;\x07b\x1b]8;id=7;file://h/p\x07c\x1b]8;;'));
+  assert.deepEqual(
+    parts.map((p) => [dec(p.bytes), p.linkAfter]),
+    [
+      ['a\x1b]8;;https://x.example/1\x1b\\', 'https://x.example/1'],
+      ['link\x1b]8;;\x07', ''],
+      ['b\x1b]8;id=7;file://h/p\x07', 'file://h/p'],
+      // An unterminated sequence stays in the last segment.
+      ['c\x1b]8;;', undefined],
+    ],
+  );
+});
+
+test('cellRuns and findLink match linked cells to recorded links', () => {
+  assert.deepEqual(cellRuns([false, true, true, false, true]), [{ start: 1, end: 3 }, { start: 4, end: 5 }]);
+  const records = [
+    { uri: 'https://a', start: { line: 3, x: 2 }, end: { line: 3, x: 5 }, text: 'AAA' },
+    { uri: 'https://b', start: { line: 3, x: 6 }, end: { line: 4, x: 2 }, text: 'BBBBBB' },
+  ];
+  assert.equal(findLink(records, 3, { start: 2, end: 5 }, 'AAA')?.uri, 'https://a');
+  assert.equal(findLink(records, 4, { start: 0, end: 2 }, 'BB')?.uri, 'https://b', 'second row of a wrapped link');
+  assert.equal(findLink(records, 9, { start: 0, end: 3 }, 'AAA')?.uri, 'https://a', 'moved by reflow: found by text');
+  assert.equal(findLink(records, 9, { start: 0, end: 3 }, 'ZZZ'), undefined, 'unknown run: no link');
 });
