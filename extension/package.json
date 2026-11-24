@@ -1,0 +1,175 @@
+{
+  "name": "code-gty",
+  "displayName": "code-gty: Ghostty Terminal",
+  "description": "A Ghostty-emulated terminal that opens as an editor tab.",
+  "version": "0.1.0",
+  "publisher": "code-gty",
+  "license": "MIT",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://example.invalid/code-gty.git"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "terminal",
+    "ghostty",
+    "shell"
+  ],
+  "main": "./dist/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "A terminal runs arbitrary code, so it requires a trusted workspace."
+    },
+    "virtualWorkspaces": false
+  },
+  "activationEvents": [
+    "onWebviewPanel:codeGty.terminal"
+  ],
+  "contributes": {
+    "commands": [
+      { "command": "codeGty.new", "title": "New Terminal", "category": "Ghostty", "icon": "$(terminal)" },
+      { "command": "codeGty.newToSide", "title": "New Terminal to the Side", "category": "Ghostty", "icon": "$(split-horizontal)" },
+      { "command": "codeGty.newInCwd", "title": "New Terminal in Current Directory", "category": "Ghostty" },
+      { "command": "codeGty.kill", "title": "Kill Terminal", "category": "Ghostty", "icon": "$(trash)" },
+      { "command": "codeGty.clear", "title": "Clear", "category": "Ghostty" },
+      { "command": "codeGty.focus", "title": "Focus Terminal", "category": "Ghostty" },
+      { "command": "codeGty.copy", "title": "Copy Selection", "category": "Ghostty" },
+      { "command": "codeGty.paste", "title": "Paste", "category": "Ghostty" },
+      { "command": "codeGty.selectAll", "title": "Select All", "category": "Ghostty" },
+      { "command": "codeGty.find", "title": "Find", "category": "Ghostty" },
+      { "command": "codeGty.scrollToPreviousCommand", "title": "Scroll to Previous Command", "category": "Ghostty" },
+      { "command": "codeGty.scrollToNextCommand", "title": "Scroll to Next Command", "category": "Ghostty" },
+      { "command": "codeGty.runSelectedText", "title": "Run Selected Text in Active Ghostty Terminal", "category": "Ghostty" },
+      { "command": "codeGty.showRecentOutput", "title": "Show Recent Output (Accessible)", "category": "Ghostty" },
+      { "command": "codeGty.rename", "title": "Rename Terminal", "category": "Ghostty" },
+      { "command": "codeGty.restartSidecar", "title": "Restart PTY Sidecar", "category": "Ghostty" }
+    ],
+    "menus": {
+      "webview/context": [
+        { "command": "codeGty.copy", "when": "webviewId == 'codeGty.terminal'", "group": "1_clipboard@1" },
+        { "command": "codeGty.paste", "when": "webviewId == 'codeGty.terminal'", "group": "1_clipboard@2" },
+        { "command": "codeGty.selectAll", "when": "webviewId == 'codeGty.terminal'", "group": "1_clipboard@3" },
+        { "command": "codeGty.clear", "when": "webviewId == 'codeGty.terminal'", "group": "2_terminal@1" },
+        { "command": "codeGty.find", "when": "webviewId == 'codeGty.terminal'", "group": "2_terminal@2" },
+        { "command": "codeGty.newToSide", "when": "webviewId == 'codeGty.terminal'", "group": "3_session@1" },
+        { "command": "codeGty.kill", "when": "webviewId == 'codeGty.terminal'", "group": "3_session@2" }
+      ],
+      "editor/title": [
+        { "command": "codeGty.newToSide", "when": "activeWebviewPanelId == 'codeGty.terminal'", "group": "navigation" }
+      ],
+      "editor/selection/context": []
+    },
+    "keybindings": [
+      { "command": "codeGty.new", "key": "ctrl+alt+`", "mac": "ctrl+alt+`" },
+      { "command": "codeGty.runSelectedText", "key": "ctrl+alt+enter", "when": "editorTextFocus && editorHasSelection" }
+    ],
+    "configuration": {
+      "title": "code-gty",
+      "properties": {
+        "codeGty.passThroughKeys": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "markdownDescription": "Extra keys that skip the shell and go to the workbench, written like `ctrl+shift+o` or `cmd+k`. VS Code has no API to read your own keybindings, so add custom ones here."
+        },
+        "codeGty.shellKeys": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "markdownDescription": "Keys that always go to the shell even if they are in the default pass-through list, for example `ctrl+b` for tmux."
+        },
+        "codeGty.env": {
+          "type": "object",
+          "additionalProperties": { "type": ["string", "null"] },
+          "default": {},
+          "markdownDescription": "Environment variables applied after `terminal.integrated.env.*`. A `null` value removes the variable. Supports `${env:NAME}`, `${workspaceFolder}` and `${userHome}`."
+        },
+        "codeGty.fontFamily": {
+          "type": ["string", "null"],
+          "default": "'IosevkaTerm Nerd Font Mono', monospace",
+          "markdownDescription": "Font for this terminal. Defaults to the bundled IosevkaTerm Nerd Font Mono. Leave blank for the bundled font, or set to `null` to use `terminal.integrated.fontFamily` instead."
+        },
+        "codeGty.fontSize": {
+          "type": ["number", "null"],
+          "default": null,
+          "markdownDescription": "Overrides `terminal.integrated.fontSize` for this terminal."
+        },
+        "codeGty.colors": {
+          "type": "object",
+          "default": {},
+          "markdownDescription": "Overrides for theme colours, keyed by ghostty-web theme names (`background`, `foreground`, `cursor`, `red`, `brightBlue`, ...)."
+        },
+        "codeGty.osc52": {
+          "type": "string",
+          "enum": ["off", "write", "readWrite"],
+          "default": "write",
+          "markdownDescription": "Whether programs in the terminal may set (`write`) or also read (`readWrite`) the clipboard through OSC 52."
+        },
+        "codeGty.flowControlWindow": {
+          "type": "number",
+          "default": 262144,
+          "minimum": 4096,
+          "description": "Bytes of unacknowledged output before the PTY is paused."
+        },
+        "codeGty.replayBufferSize": {
+          "type": "number",
+          "default": 2097152,
+          "minimum": 0,
+          "description": "Bytes of recent output kept per terminal to restore a recreated tab."
+        },
+        "codeGty.term": {
+          "type": "string",
+          "default": "xterm-256color",
+          "markdownDescription": "Value of `TERM`. Use `xterm-ghostty` only if its terminfo is installed on the machine running the shell."
+        },
+        "codeGty.retainContextWhenHidden": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep a background tab's terminal alive in memory. Turning this off saves memory; content is then restored from the replay buffer."
+        },
+        "codeGty.sidecarPath": {
+          "type": ["string", "null"],
+          "default": null,
+          "scope": "machine",
+          "description": "Development override for the sidecar binary. Its checksum is not verified."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "watch": "node scripts/build.mjs --watch",
+    "typecheck": "tsc -p . --noEmit && tsc -p webview --noEmit && tsc -p test --noEmit",
+    "lint": "eslint .",
+    "test:unit": "node --import tsx --test test/unit/*.test.ts",
+    "test:conformance": "node --import tsx --test test/conformance/*.test.ts",
+    "test:webview": "node --import tsx --test test/webview/*.test.ts",
+    "test:integration": "node test/integration/run.mjs",
+    "test:e2e": "node --import tsx --test test/e2e/*.test.ts",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.1",
+    "@types/node": "20.19.25",
+    "@types/vscode": "1.90.0",
+    "@vscode/test-electron": "2.5.2",
+    "@vscode/vsce": "3.7.0",
+    "esbuild": "0.25.12",
+    "eslint": "9.39.1",
+    "ghostty-web": "0.4.0",
+    "playwright-core": "1.56.1",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.46.4"
+  }
+}

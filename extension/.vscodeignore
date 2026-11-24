@@ -1,0 +1,11 @@
+**
+!package.json
+!README.md
+!LICENSE
+!THIRD_PARTY_NOTICES.md
+!dist/extension.js
+!dist/extension.LEGAL.txt
+!media/**
+media/*.map
+!bin/**
+!shell-integration/**

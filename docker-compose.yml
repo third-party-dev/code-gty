@@ -1,0 +1,54 @@
+# Needs the Linux VSIX in ./dist first:
+#   docker build --target dist --output type=local,dest=dist .
+#
+# End to end in a browser:     docker compose run --rm e2e
+# Manual testing in a browser: docker compose up dev   (then open http://localhost:8080)
+
+x-code-server: &code-server
+  image: codercom/code-server:4.105.1@sha256:2d48970bd2084aa34a522d772b6a437981ea80407465b3bf7958553985c570e1
+  # Root so the shared workspace volume is writable; test only.
+  user: root
+  entrypoint: ["/bin/sh", "-c"]
+  command:
+    - >
+      code-server --install-extension "$$(ls /dist/code-gty-linux-x64-*.vsix | head -1)" &&
+      exec code-server --auth none --bind-addr 0.0.0.0:8080 --disable-telemetry --disable-workspace-trust /workspace
+  volumes:
+    - ./dist:/dist:ro
+    - workspace:/workspace
+  healthcheck:
+    test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+    interval: 2s
+    timeout: 2s
+    retries: 60
+
+services:
+  code-server:
+    <<: *code-server
+
+  e2e:
+    build:
+      context: .
+      target: test-e2e
+    depends_on:
+      code-server:
+        condition: service_healthy
+    # Share code-server's network namespace so the browser reaches it as
+    # localhost: VS Code webviews need a secure context (HTTPS or localhost).
+    network_mode: service:code-server
+    environment:
+      CODE_SERVER_URL: http://localhost:8080
+      E2E_WORKSPACE: /workspace
+    volumes:
+      - workspace:/workspace
+
+  dev:
+    <<: *code-server
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./dist:/dist:ro
+      - .:/workspace
+
+volumes:
+  workspace:

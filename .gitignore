@@ -1,0 +1,11 @@
+node_modules/
+target/
+dist/
+.vscode-test/
+extension/bin/
+extension/media/webview.js
+extension/media/webview.js.map
+extension/media/webview.LEGAL.txt
+extension/media/ghostty-vt.wasm
+extension/dist/
+*.vsix

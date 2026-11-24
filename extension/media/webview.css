@@ -1,0 +1,80 @@
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--vscode-terminal-background, var(--vscode-panel-background, var(--vscode-editor-background)));
+}
+#terminal {
+  position: absolute;
+  inset: 4px 0 0 8px;
+}
+#terminal:focus, #terminal *:focus { outline: none; }
+body.bell #terminal { filter: brightness(1.4); }
+
+.find {
+  position: absolute;
+  top: 4px;
+  right: 16px;
+  z-index: 10;
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 4px 6px;
+  background: var(--vscode-editorWidget-background);
+  color: var(--vscode-editorWidget-foreground);
+  border: 1px solid var(--vscode-editorWidget-border, transparent);
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, .36));
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+}
+.find[hidden] { display: none; }
+.find input {
+  width: 180px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, transparent);
+  padding: 2px 4px;
+  outline: none;
+}
+.find input:focus { border-color: var(--vscode-focusBorder); }
+.find button {
+  background: transparent;
+  color: inherit;
+  border: none;
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 14px;
+}
+.find button:hover { background: var(--vscode-toolbar-hoverBackground); }
+.find-count { min-width: 64px; font-size: 12px; opacity: .8; }
+
+.notice {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: 8px;
+  padding: 8px;
+  color: var(--vscode-errorForeground);
+  font-family: var(--vscode-font-family);
+}
+.notice[hidden] { display: none; }
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: pre;
+}
+
+/* Bundled fonts. URLs are relative to this stylesheet, so they resolve to the
+   webview resource origin in VS Code, VSCodium and code-server alike. */
+/* IosevkaTerm Nerd Font Mono, complete (every glyph, Nerd Font icons included,
+   each sized to the cell), losslessly compressed to WOFF2. */
+@font-face { font-family: "IosevkaTerm Nerd Font Mono"; src: url("fonts/IosevkaTermNerdFontMono-Regular.woff2") format("woff2"); font-weight: normal; font-style: normal; }
+@font-face { font-family: "IosevkaTerm Nerd Font Mono"; src: url("fonts/IosevkaTermNerdFontMono-Bold.woff2") format("woff2"); font-weight: bold; font-style: normal; }
+@font-face { font-family: "IosevkaTerm Nerd Font Mono"; src: url("fonts/IosevkaTermNerdFontMono-Italic.woff2") format("woff2"); font-weight: normal; font-style: italic; }
+@font-face { font-family: "IosevkaTerm Nerd Font Mono"; src: url("fonts/IosevkaTermNerdFontMono-BoldItalic.woff2") format("woff2"); font-weight: bold; font-style: italic; }
