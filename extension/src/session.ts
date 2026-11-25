@@ -359,6 +359,11 @@ export class TerminalSession implements SessionListener {
         if (this.spawned && !this.exited) this.sidecarClient?.input(this.sessionId, d);
       },
       forward: (d, fromPty) => this.forward(d, fromPty),
+      // Sixel and iTerm2 images: decoded in the sidecar, drawn as Kitty graphics.
+      decodeImage: (req) => (this.sidecarClient && !this.exited ? this.sidecarClient.decode(this.sessionId, req) : Promise.resolve(undefined)),
+      dropped: (n) => {
+        if (this.spawned && n) this.sidecarClient?.ack(this.sessionId, n);
+      },
       title: (t) => {
         this.sequenceTitle = sanitize(t).trim() || undefined;
         this.updateTitle();

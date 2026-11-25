@@ -5,6 +5,7 @@
 //! VS Code window and multiplexes sessions by id. When stdin closes, every
 //! session is hung up and the process exits.
 
+mod decode;
 mod procinfo;
 mod protocol;
 mod replay;
@@ -15,6 +16,7 @@ use session::{Out, Session};
 use std::collections::HashMap;
 use std::io::{self, BufReader, Write};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -207,12 +209,36 @@ fn handle(frame: Frame, sessions: &Sessions, tx: &Sender<Out>) {
                 }
             }
         }
+        kind::DECODE => decode_async(id, frame.payload, tx.clone()),
         kind::QUERY_PROCESS => with_session(sessions, id, &err, |s| {
             if let Some(info) = s.process_info(false) {
                 let _ = tx.send(Out::Frame(Frame::json(kind::PROCESS_INFO, id, &info)));
             }
         }),
         other => err(format!("unknown frame kind {other}")),
+    }
+}
+
+/// Decodes on a worker thread so PTY traffic never waits for an image. At
+/// most a few decodes run at once; more are refused (the host shows nothing).
+fn decode_async(session: u32, payload: Vec<u8>, tx: Sender<Out>) {
+    static RUNNING: AtomicUsize = AtomicUsize::new(0);
+    let req_id = payload.get(0..4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).unwrap_or(0);
+    if RUNNING.fetch_add(1, Ordering::SeqCst) >= 4 {
+        RUNNING.fetch_sub(1, Ordering::SeqCst);
+        let _ = tx.send(Out::Frame(Frame::new(kind::DECODED, session, decode::reply(req_id, Err("busy".into())))));
+        return;
+    }
+    let spawned = thread::Builder::new().name("decode".into()).spawn(move || {
+        let reply = match decode::parse_request(&payload) {
+            Ok(req) => decode::reply(req.id, decode::decode(&req)),
+            Err(e) => decode::reply(req_id, Err(e)),
+        };
+        RUNNING.fetch_sub(1, Ordering::SeqCst);
+        let _ = tx.send(Out::Frame(Frame::new(kind::DECODED, session, reply)));
+    });
+    if spawned.is_err() {
+        RUNNING.fetch_sub(1, Ordering::SeqCst);
     }
 }
 

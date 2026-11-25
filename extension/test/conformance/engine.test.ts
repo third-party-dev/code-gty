@@ -78,3 +78,68 @@ test('test.py: every query is answered by the host engine', { skip: !BIN || !TES
 test('sidecar binary exists for the conformance stage', { skip: process.env.GTY_SIDECAR ? false : 'local run' }, () => {
   assert.equal(spawnSync(BIN!, ['--version']).status, 0);
 });
+
+test('sixel and iTerm2 images are decoded by the sidecar and placed', { skip: !BIN ? 'needs the sidecar' : false }, async () => {
+  const { writeFileSync } = await import('node:fs');
+  const { deflateSync } = await import('node:zlib');
+  const { KittyImages } = await import('../../vt/kitty');
+  const { RenderState } = await import('../../vt/render');
+  // A 2x2 PNG built by hand, sent as an iTerm2 inline image, then a sixel.
+  const crc = (buf: Buffer) => {
+    let c = 0xffffffff;
+    for (const x of buf) {
+      c ^= x;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    }
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type: string, data: Buffer) => {
+    const td = Buffer.concat([Buffer.from(type), data]);
+    const out = Buffer.alloc(12 + data.length);
+    out.writeUInt32BE(data.length, 0);
+    td.copy(out, 4);
+    out.writeUInt32BE(crc(td), 8 + data.length);
+    return out;
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(2, 0);
+  ihdr.writeUInt32BE(2, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(Buffer.from([0, 255, 0, 0, 0, 255, 0, 0, 0, 0, 255, 255, 255, 255]))), chunk('IEND', Buffer.alloc(0))]);
+  const file = join(tmpdir(), `gty-images-${process.pid}.bin`);
+  writeFileSync(file, `\x1b]1337;File=inline=1;width=2:${png.toString('base64')}\x07\r\n\x1bP0;1;0q"1;1;20;12#1;2;0;0;100#1!20~-!20~\x1b\\done\r\n`);
+  const c = new SidecarClient(BIN!);
+  clients.push(c);
+  await c.start();
+  const id = c.allocateId();
+  const e = new HostEngine(
+    loadVtSync(mod),
+    { cols: 60, rows: 20, scrollbackLines: 100, colors: {}, cursorStyle: 'block', cursorBlink: false, xtversion: 'x', answerback: '', clipboard: 'write' },
+    {
+      writePty: (d) => c.input(id, d),
+      forward: (d, fromPty) => fromPty && c.ack(id, d.length),
+      decodeImage: (r) => c.decode(id, r),
+      dropped: (n) => c.ack(id, n),
+    },
+  );
+  e.resize(60, 20, { cellWidth: 8, cellHeight: 16 });
+  let exit: ExitMsg | undefined;
+  c.spawnSession(id, { command: '/bin/cat', args: [file], env: ENV, cwd: tmpdir(), cols: 60, rows: 20, window: 4096, replayLimit: 0 }, {
+    onOutput: (d) => e.push(d),
+    onReplay: () => undefined,
+    onExit: (x) => (exit = x),
+    onError: () => undefined,
+  });
+  const deadline = Date.now() + 15000;
+  while (!(exit && /done/.test(format(e.term))) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+  assert.match(format(e.term), /done/);
+  const rs = new RenderState(e.vt);
+  rs.update(e.term);
+  const ps = new KittyImages(e.vt).placements(rs).map((p) => [p.row, p.width, p.height]);
+  assert.deepEqual(ps.sort(), [
+    [0, 16, 16],
+    [1, 20, 12],
+  ]);
+  e.dispose();
+});

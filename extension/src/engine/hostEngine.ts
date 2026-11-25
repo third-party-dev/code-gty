@@ -15,6 +15,9 @@
 // imports so it runs under the unit tests.
 
 import { Vt } from '../../vt/core';
+import { mode } from '../../vt/terminal';
+import type { DecodedImage, DecodeRequest } from '../sidecar';
+import { classifyDcs, classifyImageOsc, itermPlacement, kittyCommands, parseItermArgs } from './imageBridge';
 import { format, selectOutput } from '../../vt/selection';
 import {
   ClipboardReadReply,
@@ -30,6 +33,13 @@ import {
 } from '../../vt/terminal';
 
 const OSC_START = 1 << 5;
+const DCS_START = 1 << 3;
+const CAN = 0x18;
+const SUB = 0x1a;
+/** Largest image sequence we collect (base64 of a 16 MB file is ~22 MB). */
+const MAX_IMAGE_SEQUENCE = 24 * 1024 * 1024;
+/** DECSDM: sixel display mode (images at the top left, cursor unchanged). */
+const SIXEL_DISPLAY_MODE = mode(80);
 const ESC = 0x1b;
 const BEL = 0x07;
 const BACKSLASH = 0x5c;
@@ -65,6 +75,13 @@ export interface EngineHost {
   unknownSequence?(seq: UnknownSequence): void;
   colorScheme?(): 'light' | 'dark';
   error?(e: unknown): void;
+  /**
+   * Decodes an image (sixel, or an iTerm2 inline image file) for Kitty
+   * graphics. Without it, those sequences are ignored as before.
+   */
+  decodeImage?(req: DecodeRequest): Promise<DecodedImage | undefined>;
+  /** Bytes from the PTY the engine consumed without forwarding (image data): acknowledge them. */
+  dropped?(bytes: number): void;
 }
 
 export interface EngineOptions {
@@ -92,7 +109,15 @@ export class HostEngine {
   readonly term: Terminal;
   private pending: Uint8Array[] = [];
   private pendingBytes = 0;
-  private state: 'idle' | 'processing' | 'awaitingClipboard' = 'idle';
+  private state: 'idle' | 'processing' | 'awaitingClipboard' | 'awaitingImage' = 'idle';
+  /** The next pending bytes are a DCS body that has not been classified yet. */
+  private atDcs = false;
+  /** An image sequence being collected (its introducer was cancelled with CAN). */
+  private collecting: { kind: 'osc' | 'dcs'; chunks: Uint8Array[]; size: number; tooBig: boolean } | undefined;
+  /** iTerm2 MultipartFile: arguments and the base64 parts received so far. */
+  private multipart: { args: string; parts: string[]; size: number } | undefined;
+  private nextImageId = 0x60000000;
+  private imagesOn = true;
   /** The next pending bytes are an OSC body that has not been classified yet. */
   private atOsc = false;
   private prefetched: string | undefined | null = null;
@@ -108,6 +133,7 @@ export class HostEngine {
     private readonly host: EngineHost,
   ) {
     this.clipboardPolicy = opts.clipboard;
+    this.imagesOn = opts.images !== false;
     this.term = Terminal.create(vt, {
       cols: opts.cols,
       rows: opts.rows,
@@ -162,6 +188,8 @@ export class HostEngine {
     // The library default (VT220 with ANSI colour), plus clipboard (52) when
     // programs may use OSC 52.
     const features = [22];
+    // Sixel (4) when images are on: sixel is translated to Kitty graphics.
+    if (this.imageBridgeOn) features.unshift(4);
     if (this.clipboardPolicy !== 'off') features.push(52);
     return { conformance: 62, features, deviceType: 1, firmwareVersion: 10, romCartridge: 0, unitId: 0 };
   }
@@ -221,13 +249,25 @@ export class HostEngine {
     this.state = 'processing';
     try {
       while (this.pendingBytes && !this.disposed) {
+        if (this.collecting) {
+          if (!this.collect()) return; // wait for the rest of the image
+          // A decode in flight holds everything after the image until it is placed.
+          if (this.state !== 'processing') return;
+          continue;
+        }
         if (this.atOsc) {
           // The next bytes are the body of an OSC whose introducer was just
           // processed. A clipboard read needs the clipboard before the
-          // terminal sees the rest of it.
-          const decision = classifyOsc(this.joined());
-          if (decision === 'incomplete' && this.pendingBytes < MAX_HELD_OSC) return; // wait for more output
+          // terminal sees the rest of it; an iTerm2 image is collected.
+          const data = this.joined();
+          const image = this.imageBridgeOn ? classifyImageOsc(data) : 'other';
+          const decision = image === 'image' ? 'image' : classifyOsc(data);
+          if ((decision === 'incomplete' || image === 'incomplete') && this.pendingBytes < MAX_HELD_OSC) return; // wait for more output
           this.atOsc = false;
+          if (decision === 'image') {
+            this.startCollecting('osc');
+            continue;
+          }
           if (decision === 'clipboardRead' && this.host.clipboardRead && this.clipboardPolicy === 'readWrite') {
             this.state = 'awaitingClipboard';
             this.host.clipboardRead().then(
@@ -237,10 +277,22 @@ export class HostEngine {
             return;
           }
         }
+        if (this.atDcs) {
+          const decision = this.imageBridgeOn ? classifyDcs(this.joined()) : 'other';
+          if (decision === 'incomplete') return;
+          this.atDcs = false;
+          if (decision === 'sixel') {
+            this.startCollecting('dcs');
+            continue;
+          }
+        }
         const data = this.joined();
-        const stop = this.term.writeUntil(data, OSC_START);
+        const stop = this.term.writeUntil(data, OSC_START | DCS_START);
         this.host.forward(this.take(stop ? stop.consumed : data.length), true);
-        if (stop) this.atOsc = true;
+        if (stop) {
+          if (stop.kind === 'osc') this.atOsc = true;
+          else if (stop.kind === 'dcs') this.atDcs = true;
+        }
       }
     } catch (e) {
       this.host.error?.(e);
@@ -249,6 +301,165 @@ export class HostEngine {
       this.scheduleCompression();
     }
     this.flushInjected();
+  }
+
+  private get imageBridgeOn(): boolean {
+    return this.imagesOn && !!this.host.decodeImage && this.vt.features.kittyGraphics;
+  }
+
+  // ---- sixel and iTerm2 images -----------------------------------------------------
+
+  /**
+   * Both engines have just seen the introducer (ESC ] or ESC P). CAN cancels
+   * the string in both, so they are back at ground; the rest of the sequence
+   * is collected here instead of being parsed, and acknowledged as it comes
+   * so a large image cannot stall flow control.
+   */
+  private startCollecting(kind: 'osc' | 'dcs'): void {
+    const cancel = Uint8Array.of(CAN);
+    this.term.write(cancel);
+    this.host.forward(cancel, false);
+    this.collecting = { kind, chunks: [], size: 0, tooBig: false };
+  }
+
+  /** Consumes collected bytes up to the terminator. Returns false while incomplete. */
+  private collect(): boolean {
+    const c = this.collecting!;
+    const data = this.joined();
+    let end = -1; // bytes that belong to the sequence, terminator included
+    let content = -1; // bytes of content before the terminator
+    let ok = true;
+    for (let i = 0; i < data.length; i++) {
+      const b = data[i];
+      if (b === 0x07 && c.kind === 'osc') {
+        end = i + 1;
+        content = i;
+        break;
+      }
+      if (b === CAN || b === SUB) {
+        end = i + 1;
+        content = i;
+        ok = false;
+        break;
+      }
+      if (b === 0x1b) {
+        if (i + 1 >= data.length) {
+          // Cannot tell ST from an abort yet: keep the ESC for later.
+          end = -2;
+          content = i;
+          break;
+        }
+        if (data[i + 1] === 0x5c) {
+          end = i + 2;
+          content = i;
+        } else {
+          // ESC starts a new sequence: the string ends here, unterminated.
+          end = i;
+          content = i;
+          ok = false;
+        }
+        break;
+      }
+    }
+    const take = end === -1 ? data.length : end === -2 ? content : end;
+    const bytes = this.take(take);
+    this.host.dropped?.(take);
+    const body = end === -1 || end === -2 ? bytes : bytes.subarray(0, content);
+    if (!c.tooBig) {
+      c.size += body.length;
+      if (c.size > MAX_IMAGE_SEQUENCE) c.tooBig = true;
+      else c.chunks.push(body.slice());
+    }
+    if (end < 0) return false;
+    this.collecting = undefined;
+    if (!ok || c.tooBig) return true;
+    const all = new Uint8Array(c.size);
+    let off = 0;
+    for (const ch of c.chunks) {
+      all.set(ch, off);
+      off += ch.length;
+    }
+    if (c.kind === 'dcs') this.decode({ kind: 'sixel', data: all, background: this.term.background ?? 0 }, 'sixel');
+    else this.itermCommand(new TextDecoder().decode(all));
+    return true;
+  }
+
+  private itermCommand(text: string): void {
+    // 1337;File=args:base64 | 1337;MultipartFile=args | 1337;FilePart=base64 | 1337;FileEnd
+    const body = text.slice('1337;'.length);
+    if (body.startsWith('File=')) {
+      const colon = body.indexOf(':');
+      if (colon < 0) return;
+      this.itermImage(body.slice(5, colon), body.slice(colon + 1));
+    } else if (body.startsWith('MultipartFile=')) {
+      this.multipart = { args: body.slice('MultipartFile='.length), parts: [], size: 0 };
+    } else if (body.startsWith('FilePart=') && this.multipart) {
+      const part = body.slice('FilePart='.length);
+      this.multipart.size += part.length;
+      if (this.multipart.size > MAX_IMAGE_SEQUENCE) this.multipart = undefined;
+      else this.multipart.parts.push(part);
+    } else if (body.startsWith('FileEnd') && this.multipart) {
+      const m = this.multipart;
+      this.multipart = undefined;
+      this.itermImage(m.args, m.parts.join(''));
+    }
+  }
+
+  private itermImage(argText: string, base64: string): void {
+    const args = parseItermArgs(argText);
+    // inline=0 asks to download the file; a terminal tab has nowhere to put it.
+    if (!args.inline) return;
+    const data = new Uint8Array(Buffer.from(base64, 'base64'));
+    if (!data.length) return;
+    this.decode({ kind: 'file', data }, args);
+  }
+
+  /** Pauses the stream until the sidecar has decoded the image, then places it. */
+  private decode(req: DecodeRequest, how: 'sixel' | ReturnType<typeof parseItermArgs>): void {
+    const decodeImage = this.host.decodeImage;
+    if (!decodeImage) return;
+    this.state = 'awaitingImage';
+    decodeImage(req).then(
+      (img) => this.placeImage(img, how),
+      () => this.placeImage(undefined, how),
+    );
+  }
+
+  private placeImage(img: DecodedImage | undefined, how: 'sixel' | ReturnType<typeof parseItermArgs>): void {
+    if (this.disposed) return;
+    this.state = 'idle';
+    if (img) {
+      try {
+        const id = this.nextImageId++;
+        let seq: string;
+        if (how === 'sixel') {
+          // Sixel images are drawn at their pixel size. With sixel display
+          // mode (DECSDM) the image goes to the top left and the cursor stays;
+          // otherwise the cursor moves to the line below the image.
+          if (this.term.getMode(SIXEL_DISPLAY_MODE)) {
+            seq = `\x1b7\x1b[H${kittyCommands(img, id, { moveCursor: false })}\x1b8`;
+          } else {
+            const rows = Math.max(1, Math.ceil(img.height / this.metrics.cellHeight));
+            seq = kittyCommands(img, id, { moveCursor: false }) + '\n'.repeat(rows);
+          }
+        } else {
+          const place = itermPlacement(how, img.width, img.height, {
+            cols: this.term.cols,
+            rows: this.term.rows,
+            cellWidth: this.metrics.cellWidth,
+            cellHeight: this.metrics.cellHeight,
+          });
+          seq = kittyCommands(img, id, { ...place, moveCursor: true });
+        }
+        // At ground: the sequence was cancelled and nothing came after it yet.
+        const bytes = new TextEncoder().encode(seq);
+        this.term.write(bytes);
+        this.host.forward(bytes, false);
+      } catch (e) {
+        this.host.error?.(e);
+      }
+    }
+    this.process();
   }
 
   private injected: Uint8Array[] = [];
@@ -265,7 +476,7 @@ export class HostEngine {
   }
 
   private flushInjected(): void {
-    if (this.state !== 'idle' || this.atOsc || this.pendingBytes || !this.injected.length) return;
+    if (this.state !== 'idle' || this.atOsc || this.atDcs || this.collecting || this.pendingBytes || !this.injected.length) return;
     if (!this.term.atGround) return;
     for (const d of this.injected.splice(0)) {
       this.term.write(d);
@@ -323,6 +534,7 @@ export class HostEngine {
   }
 
   setImages(on: boolean): void {
+    this.imagesOn = on;
     this.term.setKittyImageLimit(on ? IMAGE_STORAGE_BYTES : 0);
   }
 

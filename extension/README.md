@@ -18,7 +18,7 @@ The terminal speaks the same protocols as Ghostty itself:
 
 - **Queries** get exact answers: device attributes, XTVERSION (`code-gty <version> (libghostty-vt <version>)`), colour queries (OSC 4/10/11/12) with your theme's colours, mode reports (including synchronized output, mode 2026), size reports, the colour scheme (mode 2031, also reported when you switch theme).
 - **The Kitty keyboard protocol**, so editors such as Neovim, Helix and Kakoune can tell every key and modifier apart (`codeGty.kittyKeyboard` turns it off).
-- **Images** with the Kitty graphics protocol (`kitty +kitten icat`, `chafa -f kitty`, yazi, ...), PNG and raw pixels, with animation (`codeGty.images`).
+- **Images** with the Kitty graphics protocol (`kitty +kitten icat`, `chafa -f kitty`, yazi, ...), including Unicode placeholders inside tmux; **sixel** (`img2sixel`, `chafa -f sixel`, ImageMagick's `sixel:-`); and **iTerm2 inline images** (`imgcat`, OSC 1337 `File=`, also the multipart form) in PNG, JPEG, GIF (animated), WebP, BMP, ICO, TIFF, TGA, PNM and QOI. Sixel and iTerm2 images are decoded by the extension's native helper and shown through the same Kitty graphics engine (`codeGty.images`). AVIF, HEIC and SVG are not supported.
 - **Synchronized output**, so full-screen programs never show half-drawn frames.
 - **Mouse reporting** in every format (X10, UTF-8, SGR, URxvt, SGR pixels), focus reporting, bracketed paste and Kitty paste events.
 - **Notifications** (OSC 9, OSC 777) as VS Code notifications when the tab is not focused (`codeGty.notifications`), **progress** (OSC 9;4) in the status bar and tab title (`codeGty.progress`), and **program status** (OSC 7501, used by build tools and coding agents) in the status bar.

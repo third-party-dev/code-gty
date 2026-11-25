@@ -21,6 +21,10 @@ export const Kind = {
   SPAWNED: 12,
   QUERY_PROCESS: 13,
   PROCESS_INFO: 14,
+  /** Decode an image file or sixel (host to sidecar); see sidecar/src/decode.rs. */
+  DECODE: 15,
+  /** Reply to DECODE (sidecar to host). */
+  DECODED: 16,
 } as const;
 
 export interface Frame {

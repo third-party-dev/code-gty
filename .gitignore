@@ -9,3 +9,4 @@ extension/media/webview.LEGAL.txt
 extension/media/ghostty-vt.wasm
 extension/dist/
 *.vsix
+__pycache__/

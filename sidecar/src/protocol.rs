@@ -24,6 +24,8 @@ pub mod kind {
     pub const KILL: u8 = 7;
     pub const ATTACH: u8 = 9;
     pub const QUERY_PROCESS: u8 = 13;
+    /// Decode an image (iTerm2 inline image file or sixel); see decode.rs.
+    pub const DECODE: u8 = 15;
     // sidecar -> host
     pub const HELLO: u8 = 1;
     pub const OUTPUT: u8 = 5;
@@ -32,6 +34,8 @@ pub mod kind {
     pub const ERROR: u8 = 11;
     pub const SPAWNED: u8 = 12;
     pub const PROCESS_INFO: u8 = 14;
+    /// Reply to DECODE, on the same session id.
+    pub const DECODED: u8 = 16;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

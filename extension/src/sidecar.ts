@@ -12,6 +12,7 @@ import {
   FrameDecoder,
   HelloMsg,
   Kind,
+  MAX_FRAME,
   ProcessInfoMsg,
   PROTOCOL_VERSION,
   SpawnRequest,
@@ -24,6 +25,22 @@ export interface SessionListener {
   onExit(exit: ExitMsg): void;
   onError(message: string): void;
   onProcessInfo?(info: ProcessInfoMsg): void;
+}
+
+/** A decoded image: zlib-compressed RGBA frames. */
+export interface DecodedImage {
+  width: number;
+  height: number;
+  frames: { delayMs: number; zrgba: Uint8Array }[];
+}
+
+export interface DecodeRequest {
+  kind: 'file' | 'sixel';
+  data: Uint8Array;
+  /** Sixel: pixels that are not drawn stay transparent. */
+  transparent?: boolean;
+  /** Sixel: colour of pixels that are not drawn (0xRRGGBB). */
+  background?: number;
 }
 
 export interface SidecarOptions {
@@ -44,6 +61,8 @@ export class SidecarClient {
   private resolveHello!: (h: HelloMsg) => void;
   private rejectHello!: (e: Error) => void;
   private stderrTail = '';
+  private nextDecode = 1;
+  private readonly decodes = new Map<number, { resolve: (d: DecodedImage | undefined) => void; timer: ReturnType<typeof setTimeout> }>();
 
   constructor(
     private readonly binary: string,
@@ -121,6 +140,59 @@ export class SidecarClient {
     this.send(encodeFrame(Kind.ATTACH, id));
   }
 
+  /**
+   * Decodes an image in the sidecar (its own thread, with size limits).
+   * Resolves undefined on any failure or after `timeoutMs`.
+   */
+  decode(session: number, req: DecodeRequest, timeoutMs = 15000): Promise<DecodedImage | undefined> {
+    if (this.dead || req.data.length + 64 > MAX_FRAME) return Promise.resolve(undefined);
+    const id = this.nextDecode++;
+    const head = new Uint8Array(10);
+    const dv = new DataView(head.buffer);
+    dv.setUint32(0, id, true);
+    head[4] = req.kind === 'sixel' ? 1 : 0;
+    head[5] = req.transparent ? 1 : 0;
+    const bg = req.background ?? 0;
+    head.set([(bg >> 16) & 255, (bg >> 8) & 255, bg & 255, 255], 6);
+    const payload = new Uint8Array(head.length + req.data.length);
+    payload.set(head);
+    payload.set(req.data, head.length);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.decodes.delete(id);
+        resolve(undefined);
+      }, timeoutMs);
+      this.decodes.set(id, { resolve, timer });
+      this.send(encodeFrame(Kind.DECODE, session, payload));
+    });
+  }
+
+  private onDecoded(p: Uint8Array): void {
+    const dv = new DataView(p.buffer, p.byteOffset, p.byteLength);
+    if (p.length < 5) return;
+    const pending = this.decodes.get(dv.getUint32(0, true));
+    if (!pending) return;
+    this.decodes.delete(dv.getUint32(0, true));
+    clearTimeout(pending.timer);
+    if (p[4] !== 0 || p.length < 17) {
+      this.options.log?.(`image decode failed: ${new TextDecoder().decode(p.subarray(5))}`);
+      pending.resolve(undefined);
+      return;
+    }
+    const width = dv.getUint32(5, true);
+    const height = dv.getUint32(9, true);
+    const n = dv.getUint32(13, true);
+    const frames: DecodedImage['frames'] = [];
+    let off = 17;
+    for (let i = 0; i < n && off + 8 <= p.length; i++) {
+      const delayMs = dv.getUint32(off, true);
+      const len = dv.getUint32(off + 4, true);
+      frames.push({ delayMs, zrgba: p.slice(off + 8, off + 8 + len) });
+      off += 8 + len;
+    }
+    pending.resolve(frames.length ? { width, height, frames } : undefined);
+  }
+
   queryProcess(id: number): void {
     this.send(encodeFrame(Kind.QUERY_PROCESS, id));
   }
@@ -169,6 +241,10 @@ export class SidecarClient {
       this.resolveHello(hello);
       return;
     }
+    if (f.kind === Kind.DECODED) {
+      this.onDecoded(f.payload);
+      return;
+    }
     const l = this.listeners.get(f.session);
     if (!l) {
       if (f.kind === Kind.ERROR) this.options.log?.(`sidecar error (session ${f.session}): ${decodeJson<{ message: string }>(f).message}`);
@@ -210,6 +286,11 @@ export class SidecarClient {
       l.onExit({ code: null, signal: null });
     }
     this.listeners.clear();
+    for (const [, d] of this.decodes) {
+      clearTimeout(d.timer);
+      d.resolve(undefined);
+    }
+    this.decodes.clear();
     this.options.onDied?.(detail);
   }
 }

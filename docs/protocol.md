@@ -18,6 +18,8 @@ u32 LE length | u8 kind | u32 LE session | payload
 | 2 | `spawn` | host to sidecar | JSON `{command, args, env, cwd?, cols, rows, width?, height?, window?, replayLimit?}` |
 | 12 | `spawned` | sidecar to host | JSON `{pid}` |
 | 3 | `input` | host to sidecar | raw bytes for the PTY |
+| 15 | `decode` | host to sidecar | Binary: `u32 request id, u8 kind (0 image file, 1 sixel DCS body), u8 flags (bit 0: sixel transparent), u8[4] background RGBA, data`. Decoded on a worker thread (at most 4 at once) with size limits; panics are caught. |
+| 16 | `decoded` | sidecar to host | Binary: `u32 request id, u8 status`; on success `u32 width, u32 height, u32 frames`, then per frame `u32 delay ms, u32 length, zlib-compressed RGBA`; on failure a UTF-8 message. |
 | 4 | `resize` | host to sidecar | JSON `{cols, rows, width?, height?}` (`width` and `height`: the text area in pixels, reported through `TIOCGWINSZ`; 0 when unknown) |
 | 5 | `output` | sidecar to host | raw PTY bytes |
 | 6 | `ack` | host to sidecar | `u32 LE` count of output bytes drawn |

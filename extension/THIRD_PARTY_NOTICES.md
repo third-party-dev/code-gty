@@ -44,7 +44,7 @@ Zig's standard library and compiler-rt (MIT) are also compiled in.
 
 ## Rust crates in bin/gty-sidecar
 
-portable-pty, serde, serde_json, libc and their dependencies, under MIT and/or Apache-2.0 licences. `cargo deny check licenses` (Docker target `sidecar-audit`) enforces the allowed list in sidecar/deny.toml.
+portable-pty, serde, serde_json, libc, image (with its png, zune-jpeg, gif, image-webp, tiff and qoi decoders) and flate2, and their dependencies, under MIT, Apache-2.0, Zlib and BSD licences. `cargo deny check licenses` (Docker target `sidecar-audit`) enforces the allowed list in sidecar/deny.toml.
 
 ## IosevkaTerm Nerd Font Mono 3.4.0 (media/fonts/IosevkaTermNerdFontMono-*.woff2)
 
