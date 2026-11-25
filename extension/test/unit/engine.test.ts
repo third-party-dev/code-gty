@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { classifyOsc, EngineHost, EngineOptions, HostEngine, oscEnd } from '../../src/engine/hostEngine';
+import { classifyConEmu, classifyOsc, EngineHost, EngineOptions, HostEngine, oscEnd } from '../../src/engine/hostEngine';
 import { loadVtSync } from '../../vt/loader';
 import { format } from '../../vt/selection';
 import { restoreSnapshot } from '../../vt/snapshot';
@@ -216,4 +216,42 @@ test('Kitty text sizing (OSC 66) falls back to printing its text at normal size'
   assert.equal(format(mirror), format(e.term));
   mirror.dispose();
   e.dispose();
+});
+
+test('classifies ConEmu OSC 9 commands as libghostty-vt parses them', () => {
+  const kind = (body: string) => {
+    const c = classifyConEmu(b(body));
+    return typeof c === 'object' ? c.kind : c;
+  };
+  assert.deepEqual(classifyConEmu(b('9;3;build \xc3\xa9\x07')), { kind: 'tabTitle', title: 'build é' });
+  assert.deepEqual(classifyConEmu(b(`9;3;${ST}`)), { kind: 'tabTitle', title: undefined });
+  assert.deepEqual(classifyConEmu(b('9;2;hello\x07')), { kind: 'messageBox', text: 'hello' });
+  for (const body of ['9;1;500', '9;5', '9;6;Tab(1)', '9;7;calc', '9;8;PATH', '9;10', '9;10;2', '9;11;note']) assert.equal(kind(`${body}\x07`), 'dropped', body);
+  // Forms libghostty-vt handles itself, or reads as a notification.
+  for (const body of ['9;hello', '9;1', '9;12', '9;4;1;50', '9;9;/tmp', '9;2', '9;3', '9;10;', '9;10;7', '9;6', '0;title', '99;x', '7;file:///']) assert.equal(kind(`${body}\x07`), 'other', body);
+  assert.equal(kind('9;3;abc'), 'incomplete');
+  assert.equal(kind('9'), 'incomplete');
+  assert.equal(kind(''), 'incomplete');
+  // Aborted by another ESC (even after a literal backslash) or cancelled: nothing happens.
+  assert.equal(kind('9;3;a\\\x1b['), 'other');
+  assert.equal(kind('9;3;a\x18'), 'other');
+});
+
+test('ConEmu tab title and message box reach the host; dropped commands go to unknownSequence', () => {
+  const events: string[] = [];
+  const { e, forwarded } = engine({
+    tabTitle: (t) => events.push(`tab:${t ?? '<reset>'}`),
+    messageBox: (t) => events.push(`box:${t}`),
+    notification: (t, body) => events.push(`note:${t}|${body}`),
+    unknownSequence: (q) => events.push(`unknown:${s(q.content)}`),
+    pwd: (p) => events.push(`pwd:${p}`),
+  });
+  // Split across chunks, between the introducer and the body.
+  e.push(b(`a${ESC}]9;3;`));
+  e.push(b(`tab one${ST}b${ESC}]9;2;hi\x07${ESC}]9;7;rm -rf /\x07${ESC}]9;just a note\x07${ESC}]9;3;\x07c`));
+  e.push(b(`${ESC}]9;9;/srv/app\x07`));
+  assert.deepEqual(events, ['tab:tab one', 'box:hi', 'unknown:9;7;rm -rf /', 'note:|just a note', 'tab:<reset>', 'pwd:/srv/app']);
+  // Every byte still reaches the mirror, in order.
+  assert.equal(forwarded.join(''), `a${ESC}]9;3;tab one${ST}b${ESC}]9;2;hi\x07${ESC}]9;7;rm -rf /\x07${ESC}]9;just a note\x07${ESC}]9;3;\x07c${ESC}]9;9;/srv/app\x07`);
+  assert.match(format(e.term), /^abc/);
 });

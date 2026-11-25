@@ -69,6 +69,10 @@ export interface EngineHost {
   /** Fetches the clipboard for a read request; undefined denies it. */
   clipboardRead?(): Promise<string | undefined>;
   notification?(title: string, body: string): void;
+  /** ConEmu OSC 9;3: the tab title, or undefined to go back to the usual one. */
+  tabTitle?(title: string | undefined): void;
+  /** ConEmu OSC 9;2: a message box. */
+  messageBox?(text: string): void;
   progress?(state: ProgressState, percent: number): void;
   programStatus?(report: ProgramStatusReport): void;
   semanticPrompt?(ev: SemanticPromptEvent): void;
@@ -239,6 +243,28 @@ export class HostEngine {
     return out;
   }
 
+  /**
+   * ConEmu OSC 9 commands that libghostty-vt parses but drops. The terminal
+   * still consumes the sequence (as a no-op); this acts on it.
+   */
+  private onConEmu(c: ConEmuCommand): void {
+    switch (c.kind) {
+      case 'tabTitle':
+        this.host.tabTitle?.(c.title);
+        break;
+      case 'messageBox':
+        this.host.messageBox?.(c.text);
+        break;
+      case 'dropped':
+        // Sleep, wait for input, GUI macros, running processes and printing
+        // environment variables are ConEmu's own business (and the last two
+        // would let any output run commands or leak secrets): only offered
+        // to other extensions, like any sequence the terminal does not know.
+        this.host.unknownSequence?.({ kind: 'osc', content: c.content, truncated: false, terminator: c.terminator });
+        break;
+    }
+  }
+
   private joined(): Uint8Array {
     if (this.pending.length === 1) return this.pending[0];
     const all = this.take(this.pendingBytes);
@@ -267,8 +293,10 @@ export class HostEngine {
           const image = this.imageBridgeOn ? classifyImageOsc(data) : 'other';
           const sizing = classifyTextSizing(data);
           const decision = image === 'image' || sizing === 'textSizing' ? 'collect' : classifyOsc(data);
-          if ((decision === 'incomplete' || image === 'incomplete' || sizing === 'incomplete') && this.pendingBytes < MAX_HELD_OSC) return; // wait for more output
+          const conEmu = classifyConEmu(data);
+          if ((decision === 'incomplete' || image === 'incomplete' || sizing === 'incomplete' || conEmu === 'incomplete') && this.pendingBytes < MAX_HELD_OSC) return; // wait for more output
           this.atOsc = false;
+          if (typeof conEmu === 'object') this.onConEmu(conEmu);
           if (decision === 'collect') {
             this.startCollecting('osc');
             continue;
@@ -668,6 +696,59 @@ export function oscEnd(data: Uint8Array): number {
  * a clipboard read (OSC 52 with `?`, or an OSC 5522 read), anything else, or
  * not decidable until more bytes arrive.
  */
+export type ConEmuCommand =
+  | { kind: 'tabTitle'; title: string | undefined }
+  | { kind: 'messageBox'; text: string }
+  /** Parsed by libghostty-vt but not acted on: 9;1, 9;5 to 9;8, 9;10, 9;11. */
+  | { kind: 'dropped'; content: Uint8Array; terminator: 'st' | 'bel' };
+
+const utf8 = new TextDecoder();
+
+/**
+ * For the bytes after `ESC ]`: a ConEmu OSC 9 command that libghostty-vt
+ * drops, 'other' for anything else (including the OSC 9 forms it handles
+ * itself: notifications, 9;4 progress, 9;9 directory, 9;12 prompt), or
+ * 'incomplete'. Follows libghostty-vt's OSC 9 parser exactly, so a sequence
+ * is never both a notification and a ConEmu command.
+ */
+export function classifyConEmu(data: Uint8Array): ConEmuCommand | 'other' | 'incomplete' {
+  if (data.length < 2) return data.length === 0 || data[0] === 0x39 ? 'incomplete' : 'other';
+  if (data[0] !== 0x39 || data[1] !== 0x3b) return 'other';
+  const end = oscEnd(data);
+  if (!end) return 'incomplete';
+  const last = data[end - 1];
+  // Cancelled (CAN/SUB) or aborted by another ESC: the terminal drops it too.
+  if (last !== BEL && !(last === BACKSLASH && data[end - 2] === ESC)) return 'other';
+  const terminator = last === BEL ? 'bel' : 'st';
+  const content = data.slice(0, last === BEL ? end - 1 : end - 2);
+  const s = String.fromCharCode(...content.subarray(2, 6));
+  const text = (from: number) => utf8.decode(content.subarray(2 + from));
+  const other = { kind: 'dropped', content, terminator } as const;
+  switch (s[0]) {
+    case '1':
+      if (s[1] === ';') return other; // sleep
+      if (s[1] === '0') {
+        if (content.length === 4) return other; // xterm emulation
+        return s[2] === ';' && s[3] !== undefined && '0123'.includes(s[3]) ? other : 'other';
+      }
+      if (s[1] === '1') return s[2] === ';' ? other : 'other'; // comment
+      return 'other'; // 9;12 prompt (libghostty-vt), or a notification
+    case '2':
+      return s[1] === ';' ? { kind: 'messageBox', text: text(2) } : 'other';
+    case '3':
+      if (s[1] !== ';') return 'other';
+      return { kind: 'tabTitle', title: content.length === 4 ? undefined : text(2) };
+    case '5':
+      return other; // wait for input
+    case '6':
+    case '7':
+    case '8':
+      return s[1] === ';' ? other : 'other';
+    default:
+      return 'other';
+  }
+}
+
 /** For the bytes after `ESC ]`: Kitty text sizing (OSC 66), something else, or too short to tell. */
 export function classifyTextSizing(data: Uint8Array): 'textSizing' | 'other' | 'incomplete' {
   const head = String.fromCharCode(...data.subarray(0, 3));

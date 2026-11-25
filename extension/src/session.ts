@@ -80,6 +80,8 @@ export class TerminalSession implements SessionListener {
   private cols = 80;
   private rows = 24;
   private sequenceTitle: string | undefined;
+  /** Set by ConEmu OSC 9;3; wins over the window title (OSC 0/2) until reset. */
+  private tabTitle: string | undefined;
   private processName: string | undefined;
   private busy: boolean | undefined;
   private shellPid: number | undefined;
@@ -145,7 +147,7 @@ export class TerminalSession implements SessionListener {
   }
 
   get title(): string {
-    const base = this.renamed || this.sequenceTitle || (this.busy && this.processName) || `Ghostty ${this.number}`;
+    const base = this.renamed || this.tabTitle || this.sequenceTitle || (this.busy && this.processName) || `Ghostty ${this.number}`;
     const p = this.progress;
     if (!p || p.state === 'remove') return base;
     const badge = p.state === 'error' ? '✕' : p.state === 'pause' ? '⏸' : p.percent >= 0 ? `${p.percent}%` : '…';
@@ -499,11 +501,17 @@ export class TerminalSession implements SessionListener {
       clipboardWrite: (text) => void vscode.env.clipboard.writeText(text),
       clipboardRead: async () => vscode.env.clipboard.readText(),
       notification: (title, body) => this.notify(title, body),
+      tabTitle: (t) => {
+        this.tabTitle = t === undefined ? undefined : sanitize(t).trim() || undefined;
+        this.updateTitle();
+      },
+      messageBox: (text) => this.messageBox(text),
       progress: (state, pct) => this.onProgress(state, pct),
       programStatus: (r) => this.onProgramStatus(r),
       semanticPrompt: (ev) => this.onSemanticPrompt(ev),
       reset: () => {
         this.sequenceTitle = undefined;
+        this.tabTitle = undefined;
         this.status.clear();
         this.host.onStatusChanged(this);
         this.updateTitle();
@@ -676,6 +684,20 @@ export class TerminalSession implements SessionListener {
     const text = [sanitize(title), sanitize(body, 500)].filter(Boolean).join(': ');
     if (!text) return;
     void vscode.window.showInformationMessage(`${this.title}: ${text}`, 'Show Terminal').then((c) => {
+      if (c) this.panel.reveal(undefined, false);
+    });
+  }
+
+  /**
+   * ConEmu's message box, as a VS Code message. Shown even when the tab has
+   * focus (the program asked for it explicitly), but not when notifications
+   * are off.
+   */
+  private messageBox(text: string): void {
+    if (gty().get<string>('notifications', 'unfocused') === 'off') return;
+    const body = sanitize(text, 500);
+    if (!body) return;
+    void vscode.window.showInformationMessage(`${this.title}: ${body}`, 'Show Terminal').then((c) => {
       if (c) this.panel.reveal(undefined, false);
     });
   }
