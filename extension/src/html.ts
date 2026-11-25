@@ -15,7 +15,7 @@ export function renderTerminalHtml({ cspSource, nonce, media, preludeScript }: H
     `img-src ${cspSource} data:`,
     `font-src ${cspSource}`,
     `style-src ${cspSource} 'nonce-${nonce}'`,
-    // ghostty-web compiles WebAssembly, which needs 'wasm-unsafe-eval'.
+    // libghostty-vt is WebAssembly, and callbacks are tiny generated modules: 'wasm-unsafe-eval'.
     `script-src 'nonce-${nonce}' 'wasm-unsafe-eval'`,
     `connect-src ${cspSource}`,
   ].join('; ');

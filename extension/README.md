@@ -1,6 +1,6 @@
 # code-gty: Ghostty Terminal
 
-A terminal that opens as an editor tab and uses [Ghostty](https://ghostty.org)'s terminal emulation (through [ghostty-web](https://github.com/coder/ghostty-web)). Because each terminal is an editor tab, you can drag it, split it, dock it next to code or pop it out into its own window.
+A terminal that opens as an editor tab and uses [Ghostty](https://ghostty.org)'s terminal emulation through [libghostty-vt](https://ghostty.org/docs), Ghostty's own terminal library, compiled to WebAssembly. Because each terminal is an editor tab, you can drag it, split it, dock it next to code or pop it out into its own window.
 
 It runs on desktop VS Code, Remote SSH, WSL, Dev Containers, Codespaces, and server-hosted editors such as code-server and Coder. It does not run in vscode.dev or github.dev without a remote, because those cannot start a shell.
 
@@ -10,7 +10,19 @@ It runs on desktop VS Code, Remote SSH, WSL, Dev Containers, Codespaces, and ser
 - **Ghostty: New Terminal to the Side** opens one beside it, in the same directory.
 - Drag the tab anywhere, or right-click it and choose **Move into New Window**.
 
-The terminal follows your `terminal.integrated.*` settings: default profile, font size, cursor, scrollback, environment, copy on selection, right-click behaviour, bell, `confirmOnKill` and so on. It also uses your colour theme's terminal colours.
+The terminal follows your `terminal.integrated.*` settings: default profile, font size, line height, letter spacing, font weights, cursor style and width, scrollback, environment, copy on selection, right-click behaviour (including `selectWord`), word separators, minimum contrast ratio, bold text in bright colours, custom glyphs, multi-line paste warning, bell, `confirmOnKill` and so on. It also uses your colour theme's terminal colours, and changes with it without losing anything on screen.
+
+## What programs can do
+
+The terminal speaks the same protocols as Ghostty itself:
+
+- **Queries** get exact answers: device attributes, XTVERSION (`code-gty <version> (libghostty-vt <version>)`), colour queries (OSC 4/10/11/12) with your theme's colours, mode reports (including synchronized output, mode 2026), size reports, the colour scheme (mode 2031, also reported when you switch theme).
+- **The Kitty keyboard protocol**, so editors such as Neovim, Helix and Kakoune can tell every key and modifier apart (`codeGty.kittyKeyboard` turns it off).
+- **Images** with the Kitty graphics protocol (`kitty +kitten icat`, `chafa -f kitty`, yazi, ...), PNG and raw pixels, with animation (`codeGty.images`).
+- **Synchronized output**, so full-screen programs never show half-drawn frames.
+- **Mouse reporting** in every format (X10, UTF-8, SGR, URxvt, SGR pixels), focus reporting, bracketed paste and Kitty paste events.
+- **Notifications** (OSC 9, OSC 777) as VS Code notifications when the tab is not focused (`codeGty.notifications`), **progress** (OSC 9;4) in the status bar and tab title (`codeGty.progress`), and **program status** (OSC 7501, used by build tools and coding agents) in the status bar.
+- **The clipboard** through OSC 52 and the Kitty clipboard protocol, as `codeGty.osc52` allows.
 
 ## Keyboard
 
@@ -25,6 +37,7 @@ VS Code does not let extensions read your keybindings, so if you have custom sho
 | Find | `Ctrl+F` | `Cmd+F` |
 | Previous or next command | `Ctrl+Up`, `Ctrl+Down` | `Cmd+Up`, `Cmd+Down` |
 | Clear | Command Palette | `Cmd+K` |
+| Scroll a page | `Shift+PageUp`, `Shift+PageDown` | `Shift+PageUp`, `Shift+PageDown` |
 
 ## Shell integration
 
@@ -49,15 +62,20 @@ Ctrl+click (Cmd+click on macOS) opens:
 | `codeGty.fontSize` | Override the terminal font size for this extension only |
 | `codeGty.colors` | Override individual theme colours |
 | `codeGty.osc52` | Whether programs may set (`write`) or also read (`readWrite`) the clipboard |
+| `codeGty.notifications` | Program notifications: `off`, `unfocused` (default) or `always` |
+| `codeGty.progress` | Show program progress in the status bar and tab title (default on) |
+| `codeGty.kittyKeyboard` | Allow the Kitty keyboard protocol (default on) |
+| `codeGty.images` | Show Kitty graphics images (default on) |
+| `codeGty.answerback` | Reply to ENQ (default empty) |
 | `codeGty.term` | Value of `TERM` (default `xterm-256color`) |
-| `codeGty.retainContextWhenHidden` | Keep background tabs alive in memory (default on) |
+| `codeGty.retainContextWhenHidden` | Keep background tabs alive in memory (default on; off saves memory and redraws the tab exactly when shown) |
 | `codeGty.flowControlWindow`, `codeGty.replayBufferSize` | Output tuning |
 
 ### Fonts
 
 The extension bundles the complete **IosevkaTerm Nerd Font Mono** (regular, bold, italic, bold italic), the default, so it works the same in VS Code, VSCodium and code-server (including in the browser) without installing anything. Every glyph is included, the Nerd Font icons too, and each icon is sized to one cell. The glyphs are exactly half an em wide, so at even font sizes the cells line up on whole pixels with no extra spacing.
 
-Powerline separators (U+E0B0–E0BF, including the rounded arches) and block elements (U+2580–259F) are drawn as shapes that exactly fill their cell, as native Ghostty and VS Code's own terminal do, so they line up with neighbouring cell backgrounds at any font, size or display scale.
+Box drawing (U+2500–257F), block elements (U+2580–259F), Braille (U+2800–28FF), sextants (U+1FB00–1FB3B) and Powerline separators (U+E0B0–E0BF, including the rounded arches) are drawn as shapes that exactly fill their cell, as native Ghostty and VS Code's own terminal do, so they line up with neighbouring cell backgrounds at any font, size or display scale. `terminal.integrated.customGlyphs: false` uses the font's glyphs instead.
 
 Set `"codeGty.fontFamily": null` to use `terminal.integrated.fontFamily` instead, or name any other font. For Nerd Font icons with another font, use its *Nerd Font Mono* build: the canvas renderer draws each glyph at the font's own size, so icons only fit their cell when they come from the same font as the text.
 
@@ -65,9 +83,8 @@ Fonts installed on your machine also work in desktop VS Code and VSCodium. In co
 
 ### Built-in settings that are not supported yet
 
-- `terminal.integrated.lineHeight`, `letterSpacing`, `fontWeight`, `fontWeightBold`, `minimumContrastRatio` and `wordSeparators`: ghostty-web 0.4 has no options for these.
-- `terminal.integrated.rightClickBehavior: "selectWord"` shows the context menu instead.
 - Middle-click paste and the Linux primary selection.
+- `terminal.integrated.gpuAcceleration`: the terminal draws with canvas 2D.
 
 ## Known limitations
 
@@ -77,7 +94,7 @@ This terminal is a webview, not a VS Code terminal, so:
 - other extensions' terminal link providers, quick fixes and environment contributions (for example the git extension's askpass helper) do not apply. Extensions can use this extension's own API instead (below);
 - **Terminal: Run Selected Text** targets the built-in terminal. Use **Ghostty: Run Selected Text in Active Ghostty Terminal** (`Ctrl+Alt+Enter`) instead;
 - in a browser (code-server, Coder), keys the browser keeps for itself, such as `Ctrl+W`, cannot be captured;
-- a window reload restarts the shell, in the same directory, with a divider line. Sessions that survive a reload are planned. In browser-hosted editors the directory is saved lazily, so a `cd` made in the last few seconds before a reload can be lost;
+- a window reload restarts the shell, in the same directory, with a divider line. (Moving a tab, or a hidden tab coming back, keeps everything: the screen is restored exactly from the terminal engine in the extension host.) Sessions that survive a reload are planned. In browser-hosted editors the directory is saved lazily, so a `cd` made in the last few seconds before a reload can be lost;
 - browser-hosted editors must be served over HTTPS or from `localhost`. Over plain HTTP from another host, VS Code disables all webviews, including this terminal;
 - screen-reader support is basic: a live region of the visible screen when `editor.accessibilitySupport` is `on`, and **Ghostty: Show Recent Output (Accessible)**.
 
@@ -88,6 +105,16 @@ const api = vscode.extensions.getExtension('code-gty.code-gty')?.exports;
 const term = api.createTerminal({ name: 'build', cwd: '/work', env: { CI: '1' } });
 term.sendText('make');
 const off = api.contributeEnvironment('my-extension', { MY_TOOL_SOCKET: '/tmp/s' });
+
+term.readScreen();           // the visible screen as text
+await term.readOutput(200);  // the last 200 lines of screen and scrollback
+term.lastCommandOutput();    // output of the last command (needs shell integration)
+term.lastExitCode;           // its exit code
+
+// Sequences the terminal does not implement, for your own protocols:
+api.onDidReceiveSequence(({ terminal, id, content }) => {
+  if (id === '7400') console.log(new TextDecoder().decode(content)); // ESC ] 7400 ; ... ST
+});
 ```
 
 The commands `codeGty.sendText` (`{ text, addNewLine }`) and `codeGty.new` can also be called with `vscode.commands.executeCommand`.

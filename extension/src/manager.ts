@@ -1,7 +1,10 @@
 // Owns the sidecar process, the list of terminal tabs and the commands.
 
 import * as crypto from 'node:crypto';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
+import type { UnknownSequence } from '../vt/terminal';
 import { EnvPatch } from './env';
 import { CreateOptions, SessionHost, TerminalSession } from './session';
 import { SidecarClient } from './sidecar';
@@ -22,16 +25,32 @@ export class TerminalManager implements SessionHost, vscode.WebviewPanelSerializ
   private readonly closeEmitter = new vscode.EventEmitter<TerminalSession>();
   readonly onDidOpen = this.openEmitter.event;
   readonly onDidClose = this.closeEmitter.event;
+  private readonly sequenceEmitter = new vscode.EventEmitter<{ session: TerminalSession; sequence: UnknownSequence }>();
+  /** OSC and APC sequences libghostty-vt does not implement, for other extensions. */
+  readonly onDidReceiveSequence = this.sequenceEmitter.event;
   readonly extensionUri: vscode.Uri;
+  readonly extensionVersion: string;
+  private module: WebAssembly.Module | undefined;
+  private readonly statusItem: vscode.StatusBarItem;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     readonly log: vscode.LogOutputChannel,
   ) {
     this.extensionUri = context.extensionUri;
+    this.extensionVersion = String((context.extension?.packageJSON as { version?: string } | undefined)?.version ?? '0.0.0');
+    this.statusItem = vscode.window.createStatusBarItem('codeGty.programStatus', vscode.StatusBarAlignment.Left, 50);
+    this.statusItem.name = 'Ghostty Program Status';
+    this.statusItem.command = 'codeGty.focus';
     context.subscriptions.push(
       this.openEmitter,
       this.closeEmitter,
+      this.sequenceEmitter,
+      this.statusItem,
+      vscode.window.onDidChangeActiveColorTheme((t) => {
+        const dark = t.kind === vscode.ColorThemeKind.Dark || t.kind === vscode.ColorThemeKind.HighContrast;
+        for (const s of this.sessions) s.colorSchemeChanged(dark);
+      }),
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (affectsWebview(e)) for (const s of this.sessions) s.pushConfig();
       }),
@@ -65,6 +84,36 @@ export class TerminalManager implements SessionHost, vscode.WebviewPanelSerializ
     return this.starting;
   }
 
+  /** The libghostty-vt module, compiled once and instantiated per session. */
+  vtModule(): WebAssembly.Module {
+    if (!this.module) {
+      const file = path.join(this.context.extensionPath, 'media', 'ghostty-vt.wasm');
+      this.module = new WebAssembly.Module(fs.readFileSync(file));
+    }
+    return this.module;
+  }
+
+  onSequence(s: TerminalSession, sequence: UnknownSequence): void {
+    this.sequenceEmitter.fire({ session: s, sequence });
+  }
+
+  /** Shows what the active terminal's program reports (OSC 7501) in the status bar. */
+  onStatusChanged(s: TerminalSession): void {
+    const active = this.activeSession;
+    if (s !== active && active && this.sessions.has(s)) return;
+    const records = active ? [...active.status.values()].sort((a, b) => b.updated - a.updated) : [];
+    const r = records.find((x) => x.id === '') ?? records[0];
+    if (!r) {
+      this.statusItem.hide();
+      return;
+    }
+    const icon = { idle: '$(circle-outline)', working: '$(sync~spin)', done: '$(check)', blocked: '$(bell)', error: '$(error)', clear: '' }[r.state];
+    const pct = r.progress >= 0 ? ` ${r.progress}%` : '';
+    this.statusItem.text = `${icon} ${r.app || active!.title}${pct}${r.message ? `: ${r.message.slice(0, 60)}` : ''}`;
+    this.statusItem.tooltip = records.map((x) => `${x.id || x.app || 'program'}: ${x.state}${x.message ? ` — ${x.message}` : ''}`).join('\n');
+    this.statusItem.show();
+  }
+
   planLaunch(cwd: string | undefined, opts: CreateOptions): LaunchPlan {
     const env: EnvPatch = {};
     for (const patch of this.contributed.values()) Object.assign(env, patch);
@@ -79,6 +128,7 @@ export class TerminalManager implements SessionHost, vscode.WebviewPanelSerializ
 
   onSessionFocused(s: TerminalSession): void {
     this.active = s;
+    this.onStatusChanged(s);
   }
 
   onSessionClosed(s: TerminalSession): void {
@@ -123,7 +173,13 @@ export class TerminalManager implements SessionHost, vscode.WebviewPanelSerializ
   }
 
   get activeSession(): TerminalSession | undefined {
-    for (const s of this.sessions) if (s.panel.active) return s;
+    for (const s of this.sessions) {
+      try {
+        if (s.panel.active) return s;
+      } catch {
+        // A panel that is being disposed throws on access.
+      }
+    }
     return this.active && this.sessions.has(this.active) ? this.active : undefined;
   }
 

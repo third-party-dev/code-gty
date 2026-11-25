@@ -12,5 +12,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["./**/*.ts", "../src/shared/**/*.ts"]
+  "include": ["./**/*.ts", "../src/shared/**/*.ts", "../vt/**/*.ts", "../term/**/*.ts"]
 }

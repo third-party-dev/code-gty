@@ -15,6 +15,38 @@ ARG DEBIAN_IMAGE=debian:bookworm-slim@sha256:e67eeead736ff7bbe258ef088bff683635c
 ARG ALPINE_IMAGE=alpine:3.22@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f
 
 # ---------------------------------------------------------------------------
+# libghostty-vt WebAssembly module (vt-wasm/build.sh)
+#   VT_SOURCE=build    wasm32-wasi from source with Zig 0.17 (default; Kitty graphics)
+#   VT_SOURCE=release  the official signed wasm32-freestanding module (no images)
+# The build is reproducible; VT_WASM_SHA256 pins the result of the default.
+# ---------------------------------------------------------------------------
+FROM ${DEBIAN_IMAGE} AS vt-wasm
+ARG VT_VERSION=1.0.2
+ARG VT_SOURCE=build
+ARG VT_WASM_SHA256=4715aa24a337667cdd2f915616c1877aca345ab6d7b8987fc868c8d3ade00575
+ARG ZIG17_VERSION=0.17.0
+ARG ZIG17_SHA256_X86_64=1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026
+ARG ZIG17_SHA256_AARCH64=9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl minisign patch xz-utils && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    if [ "$VT_SOURCE" = build ]; then \
+      arch="$(uname -m)"; \
+      case "$arch" in x86_64) sum="$ZIG17_SHA256_X86_64";; aarch64) sum="$ZIG17_SHA256_AARCH64";; *) echo "unsupported $arch"; exit 1;; esac; \
+      curl -fsSLo /tmp/zig.tar.xz "https://ziglang.org/download/${ZIG17_VERSION}/zig-${arch}-linux-${ZIG17_VERSION}.tar.xz"; \
+      echo "${sum}  /tmp/zig.tar.xz" | sha256sum -c -; \
+      mkdir -p /opt/zig17 && tar -xJf /tmp/zig.tar.xz -C /opt/zig17 --strip-components=1 && rm /tmp/zig.tar.xz; \
+    fi
+COPY vt-wasm/ /vt-wasm/
+RUN set -eux; \
+    ZIG=/opt/zig17/zig VT_VERSION="$VT_VERSION" VT_SOURCE="$VT_SOURCE" WORK=/tmp/vt /vt-wasm/build.sh /out; \
+    if [ "$VT_SOURCE" = build ] && [ "$VT_VERSION" = 1.0.2 ]; then echo "${VT_WASM_SHA256}  /out/ghostty-vt.wasm" | sha256sum -c -; fi; \
+    rm -rf /tmp/vt
+
+# docker build --target vt-wasm-out --output type=local,dest=extension/media .
+FROM scratch AS vt-wasm-out
+COPY --from=vt-wasm /out/ghostty-vt.wasm /
+
+# ---------------------------------------------------------------------------
 # Extension host + webview (TypeScript)
 # ---------------------------------------------------------------------------
 FROM ${NODE_IMAGE} AS node-deps
@@ -27,7 +59,10 @@ FROM node-deps AS webview
 ARG SOURCE_DATE_EPOCH=0
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 COPY extension/ ./
-RUN npm run typecheck \
+COPY --from=vt-wasm /out/ghostty-vt.wasm media/ghostty-vt.wasm
+# The bindings' generated layout must describe exactly this module.
+RUN node scripts/gen-vt-layout.mjs --check media/ghostty-vt.wasm \
+ && npm run typecheck \
  && npm run lint \
  && npm run test:unit \
  && NODE_ENV=production node scripts/build.mjs \
@@ -140,8 +175,10 @@ COPY --from=package /dist/ /
 
 # Protocol conformance and shell integration against the real Linux binary.
 FROM node-deps AS test-conformance
-RUN apt-get update && apt-get install -y --no-install-recommends bash zsh fish procps && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends bash zsh fish procps python3 && rm -rf /var/lib/apt/lists/*
 COPY extension/ ./
+COPY test.py /src/test.py
+COPY --from=vt-wasm /out/ghostty-vt.wasm media/ghostty-vt.wasm
 COPY --from=sidecar-build /out/linux-x64/gty-sidecar /usr/local/bin/gty-sidecar
 ENV GTY_SIDECAR=/usr/local/bin/gty-sidecar
 RUN useradd -m tester && chown -R tester /src
@@ -158,10 +195,14 @@ COPY --from=sidecar-build /out/alpine-x64/gty-sidecar /usr/local/bin/
 RUN gty-sidecar --version && gty-sidecar --selftest && touch /portability-alpine-ok
 
 # Webview in headless Chromium against a mock host.
+# Webview (gty-term) in Chromium, Firefox and WebKit against a mock host.
 FROM ${PLAYWRIGHT_IMAGE} AS test-webview
 WORKDIR /src/extension
 COPY --from=webview /src/extension ./
-RUN npm run test:webview && touch /webview-ok
+RUN GTY_BROWSER=chromium npm run test:webview \
+ && GTY_BROWSER=firefox npm run test:webview \
+ && GTY_BROWSER=webkit npm run test:webview \
+ && touch /webview-ok
 
 # Desktop integration: real VS Code under Xvfb. Downloads the pinned VS Code
 # build, so it needs network at build time.

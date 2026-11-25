@@ -21,7 +21,6 @@
   },
   "include": [
     "src/**/*.ts",
-    "test/unit/**/*.ts",
-    "test/conformance/**/*.ts"
+    "vt/**/*.ts"
   ]
 }

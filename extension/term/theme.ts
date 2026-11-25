@@ -1,7 +1,36 @@
 // Maps VS Code's terminal colour tokens (exposed to webviews as --vscode-*
-// CSS variables) onto a ghostty-web theme.
+// CSS variables) onto a terminal theme.
 
-import type { ITheme } from 'ghostty-web';
+export interface Theme {
+  background: string;
+  foreground: string;
+  cursor: string;
+  cursorAccent: string;
+  selectionBackground: string;
+  selectionForeground?: string;
+  findMatchBackground?: string;
+  findMatchHighlightBackground?: string;
+  black?: string;
+  red?: string;
+  green?: string;
+  yellow?: string;
+  blue?: string;
+  magenta?: string;
+  cyan?: string;
+  white?: string;
+  brightBlack?: string;
+  brightRed?: string;
+  brightGreen?: string;
+  brightYellow?: string;
+  brightBlue?: string;
+  brightMagenta?: string;
+  brightCyan?: string;
+  brightWhite?: string;
+}
+type ITheme = Theme;
+
+/** The 16 ANSI colours in palette order. */
+export const ANSI_KEYS = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white', 'brightBlack', 'brightRed', 'brightGreen', 'brightYellow', 'brightBlue', 'brightMagenta', 'brightCyan', 'brightWhite'] as const;
 
 const ANSI: [keyof ITheme, string][] = [
   ['black', 'ansiBlack'],
@@ -89,16 +118,30 @@ export function readTheme(style: { getPropertyValue(name: string): string }, ove
   };
   const selFg = normalizeColor(css('terminal-selectionForeground'), background);
   if (selFg) theme.selectionForeground = selFg;
+  const fm = normalizeColor(css('terminal-findMatchBackground') ?? css('editor-findMatchBackground'), background);
+  if (fm) theme.findMatchBackground = fm;
+  const fmh = normalizeColor(css('terminal-findMatchHighlightBackground') ?? css('editor-findMatchHighlightBackground'), background);
+  if (fmh) theme.findMatchHighlightBackground = fmh;
   for (const [key, token] of ANSI) {
-    (theme as Record<string, string>)[key] = normalizeColor(css(`terminal-${token}`), background) ?? FALLBACK[key as keyof typeof FALLBACK];
+    (theme as unknown as Record<string, string>)[key] = normalizeColor(css(`terminal-${token}`), background) ?? FALLBACK[key as keyof typeof FALLBACK];
   }
   for (const [k, v] of Object.entries(overrides)) {
     const c = normalizeColor(v, background);
-    if (c) (theme as Record<string, string>)[k] = c;
+    if (c) (theme as unknown as Record<string, string>)[k] = c;
   }
   return theme;
 }
 
 export function sameTheme(a: ITheme | undefined, b: ITheme): boolean {
   return !!a && JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** '#rrggbb' -> 0xRRGGBB. */
+export function hexToRgb(hex: string): number {
+  return parseInt(hex.slice(1, 7), 16);
+}
+
+/** Palette entries 0-15 from the theme. */
+export function themePalette(t: Theme): number[] {
+  return ANSI_KEYS.map((k) => hexToRgb(t[k] ?? FALLBACK[k]));
 }

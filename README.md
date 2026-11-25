@@ -1,18 +1,22 @@
 # code-gty
 
-A VS Code extension that shows a Ghostty-emulated terminal in an editor tab. It implements [PLAN.md](PLAN.md). The user-facing description is in [extension/README.md](extension/README.md).
+A VS Code extension that shows a Ghostty-emulated terminal in an editor tab. It implements [PLAN.md](PLAN.md), with the terminal itself rebuilt on libghostty-vt as described in [PLAN-redo.md](PLAN-redo.md). The user-facing description is in [extension/README.md](extension/README.md).
 
 ## Layout
 
 | Path | What it is |
 | --- | --- |
 | `sidecar/` | Rust PTY broker (`gty-sidecar`): spawns shells with `portable-pty`, multiplexes sessions over stdin/stdout frames, handles flow control, coalescing, the replay buffer and process-group kill |
-| `extension/src/` | Extension host (TypeScript): sessions, settings, environment, profiles, links, clipboard, OSC scanning, serializer, exported API |
+| `extension/vt/` | gty-vt: TypeScript bindings for libghostty-vt (WASM), shared by host and webview. `layout.generated.ts` comes from the module's own type manifest (`scripts/gen-vt-layout.mjs`) |
+| `extension/src/engine/` | The authoritative engine per session: every byte from the sidecar goes through it; it owns replies and effects and snapshots for webviews |
+| `extension/src/` | Extension host (TypeScript): sessions, settings, environment, profiles, links, clipboard, effects to VS Code APIs, serializer, exported API |
 | `extension/src/shared/` | Code used by both the host and the webview: message schema and validation, key pass-through, paste preparation |
-| `extension/webview/` | Webview (TypeScript, bundled to `media/webview.js`): ghostty-web, fit, theme, keys, find, prompt marks, links |
+| `extension/term/` | gty-term: the browser terminal on a mirror engine: canvas renderer, sprites, keyboard/IME, mouse, selection, find, links, images |
+| `extension/webview/` | Webview glue (bundled to `media/webview.js`): messages, settings, pass-through keys, clipboard |
+| `vt-wasm/` | `build.sh` builds `extension/media/ghostty-vt.wasm` (libghostty-vt 1.0.2, wasm32-wasi, Zig 0.17) with the patches in `vt-wasm/patches` |
 | `extension/shell-integration/` | bash, zsh, fish and PowerShell scripts that emit OSC 133 and OSC 7 |
 | `extension/test/` | `unit`, `conformance` (real sidecar), `webview` (Chromium), `integration` (VS Code under Xvfb), `e2e` (code-server) |
-| `docs/` | [Protocol](docs/protocol.md), [spike findings](docs/spikes.md), [release checklist](docs/release-checklist.md) |
+| `docs/` | [Protocol](docs/protocol.md), [spike findings](docs/spikes.md) (including the libghostty-vt Phase 0 measurements), [release checklist](docs/release-checklist.md) |
 
 ## Building and testing
 
@@ -26,14 +30,19 @@ docker build --target dist --output type=local,dest=dist .
 docker build --target dist --build-arg SIDECAR_TARGETS=all --output type=local,dest=dist .
 
 # All container tests: clippy + cargo test, conformance and shell integration,
-# Debian/Alpine portability, webview in Chromium, VS Code integration under Xvfb
+# Debian/Alpine portability, webview in Chromium, Firefox and WebKit, VS Code
+# integration under Xvfb
 docker build --target ci .
 
 # Licence and advisory audit of the Rust dependencies
 docker build --target sidecar-audit .
 
-# Browser end to end against code-server (needs ./dist from the first command)
+# Browser end to end against code-server (needs ./dist from the first command);
+# GTY_BROWSER=firefox or webkit for the other engines
 docker compose run --rm e2e
+
+# Just the libghostty-vt module, into extension/media
+docker build --target vt-wasm-out --output type=local,dest=extension/media .
 
 # Try it in a browser at http://localhost:8080
 docker compose up dev
@@ -47,6 +56,8 @@ Open the repo in the dev container (`.devcontainer/`), or with Node 22 and Rust 
 
 ```sh
 cd sidecar && cargo build
+# extension/media/ghostty-vt.wasm: docker build --target vt-wasm-out (above),
+# or vt-wasm/build.sh extension/media with Zig 0.17 and minisign installed
 cd ../extension && npm ci && npm run build
 npm run test:unit && npm run test:conformance
 ```
@@ -71,5 +82,15 @@ These are defaults to confirm or change:
 2. **Sessions do not survive a reload** in this version. A reload restores the tab with a fresh shell in the same directory.
 3. **Oldest VS Code version** is 1.90 (`engines.vscode`). Floating editor windows need 1.85 or later.
 4. **Manual checklist** for Windows, macOS, Remote SSH and WSL, in `docs/release-checklist.md`.
-5. **Name, publisher and licence** are placeholders: `code-gty`, publisher `code-gty`, MIT. ghostty-web is MIT, so it is compatible with MIT and most other licences. Change `publisher` and `repository` in `extension/package.json` before publishing.
+5. **Name, publisher and licence** are placeholders: `code-gty`, publisher `code-gty`, MIT. libghostty-vt is MIT, so it is compatible with MIT and most other licences. Change `publisher` and `repository` in `extension/package.json` before publishing.
 6. **No telemetry.**
+
+## Decisions taken for PLAN-redo.md
+
+1. **Two engines**: an authoritative libghostty-vt terminal in the extension host and a mirror in the webview, fed the same bytes in order.
+2. **Kitty graphics** ship: the module is built from source for wasm32-wasi (the official wasm32-freestanding module disables Kitty graphics). Building it needed two small fixes to upstream, in `vt-wasm/patches`; both are worth sending upstream.
+3. **Migration in one release**: ghostty-web and its patches are gone; there is no `codeGty.engine` switch.
+4. **`retainContextWhenHidden`** stays on by default. With exact snapshot restore it can be turned off with no loss other than a redraw.
+5. **Notifications and progress** are on by default; notifications only when the tab is not focused.
+6. **Upstream contributions**: not sent. The two patches and the JavaScript bindings are candidates, if you agree.
+

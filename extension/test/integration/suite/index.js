@@ -62,6 +62,45 @@ test('shell integration reports the cwd', async () => {
   await until(() => t.cwd === '/tmp', 10000, 'cwd /tmp');
 });
 
+test('the host engine reads the screen', async () => {
+  const t = api.terminals.find((x) => x.name === 'it-1');
+  t.sendText('echo marker-$((40 + 2))');
+  await until(() => t.readScreen().includes('marker-42'), 10000, 'marker on screen');
+  assert.match(await t.readOutput(50), /marker-42/);
+});
+
+test('OSC 0 sets the tab title', async () => {
+  // An explicit name wins over program titles, so use an unnamed terminal.
+  const t = api.createTerminal();
+  await t.processId;
+  // The image's default .bashrc retitles the tab at every prompt, so look
+  // while the command still runs, and let it finish before closing.
+  t.sendText("printf '\\033]0;title-from-osc\\a'; sleep 2");
+  await until(() => vscode.window.tabGroups.all.flatMap((g) => g.tabs).some((x) => x.label.includes('title-from-osc')), 10000, 'tab title');
+  assert.equal(t.name, 'title-from-osc');
+  await sleep(3000);
+  t.dispose();
+});
+
+test('shell integration reports exit codes and command output', async () => {
+  const t = api.terminals.find((x) => x.name === 'it-1');
+  t.sendText('printf "out-a\\nout-b\\n"; false');
+  await until(() => t.lastExitCode === 1, 10000, 'exit code 1');
+  assert.match(t.lastCommandOutput() ?? '', /out-a\nout-b/);
+});
+
+test('unknown OSC sequences reach other extensions', async () => {
+  const t = api.terminals.find((x) => x.name === 'it-1');
+  let got;
+  const sub = api.onDidReceiveSequence((e) => {
+    if (e.id === '7400') got = new TextDecoder().decode(e.content);
+  });
+  t.sendText("printf '\\033]7400;hello-ext\\a'");
+  await until(() => got, 10000, 'custom OSC');
+  assert.equal(got, '7400;hello-ext');
+  sub.dispose();
+});
+
 test('contributed environment reaches new terminals', async () => {
   const d = api.contributeEnvironment('test', { GTY_CONTRIB: 'from-api' });
   const t = api.createTerminal({ name: 'it-2', env: { GTY_OPT: 'opt' } });
@@ -85,7 +124,7 @@ test('settings env is applied with variable resolution', async () => {
 
 test('commands are registered', async () => {
   const all = await vscode.commands.getCommands(true);
-  for (const c of ['codeGty.new', 'codeGty.newToSide', 'codeGty.kill', 'codeGty.clear', 'codeGty.find', 'codeGty.sendText']) {
+  for (const c of ['codeGty.new', 'codeGty.newToSide', 'codeGty.kill', 'codeGty.clear', 'codeGty.find', 'codeGty.sendText', 'codeGty.scrollToPreviousCommand', 'codeGty.showRecentOutput']) {
     assert.ok(all.includes(c), c);
   }
 });
@@ -110,6 +149,10 @@ test('the tab can move to another editor group and keep working', async () => {
   const out = path.join(ws, 'moved.txt');
   t.sendText(`echo moved > ${out}`);
   assert.equal(await readWhenWritten(out), 'moved');
+  // The moved tab's new webview starts from a snapshot of the host engine;
+  // the host still has everything that came before.
+  assert.match(t.readScreen(), /moved/);
+  assert.match(await t.readOutput(200), /marker-42/);
 });
 
 test('disposing a terminal closes it', async () => {

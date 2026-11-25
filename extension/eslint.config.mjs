@@ -14,7 +14,7 @@ export default tseslint.config(
   },
   {
     files: ['scripts/**/*.mjs', 'test/integration/**/*.mjs', 'test/integration/**/*.js'],
-    languageOptions: { globals: { process: 'readonly', console: 'readonly', __dirname: 'readonly', require: 'readonly', module: 'writable', setTimeout: 'readonly' } },
+    languageOptions: { globals: { process: 'readonly', console: 'readonly', __dirname: 'readonly', require: 'readonly', module: 'writable', setTimeout: 'readonly', WebAssembly: 'readonly', TextDecoder: 'readonly' } },
     rules: { '@typescript-eslint/no-require-imports': 'off' },
   },
 );

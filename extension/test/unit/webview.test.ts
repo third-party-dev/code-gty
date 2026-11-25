@@ -2,11 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { defaultPassThrough, KeyMatcher, keyName, parseKey } from '../../src/shared/keys';
 import { parseWebviewMessage } from '../../src/shared/messages';
-import { isMultiline, preparePaste } from '../../src/shared/paste';
-import { findFileLinks } from '../../webview/fileLinks';
-import { cellRuns, findLink, splitHyperlinks } from '../../webview/hyperlinks';
-import { PromptMarks } from '../../webview/marks';
-import { normalizeColor } from '../../webview/theme';
+import { isMultiline } from '../../src/shared/paste';
+import { findFileLinks } from '../../term/fileLinks';
+import { contrast, ensureContrast } from '../../term/renderer';
+import { normalizeColor, readTheme, themePalette } from '../../term/theme';
 
 const ev = (code: string, mods: Partial<Record<'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey', boolean>> = {}, key = '') => ({
   code,
@@ -39,19 +38,28 @@ test('pass-through matcher', () => {
 });
 
 test('webview message validation', () => {
-  assert.deepEqual(parseWebviewMessage({ type: 'resize', cols: 80, rows: 24 }), { type: 'resize', cols: 80, rows: 24 });
-  assert.equal(parseWebviewMessage({ type: 'resize', cols: 0, rows: 24 }), undefined);
-  assert.equal(parseWebviewMessage({ type: 'resize', cols: 1.5, rows: 24 }), undefined);
+  assert.deepEqual(parseWebviewMessage({ type: 'resize', cols: 80, rows: 24, cellWidth: 9, cellHeight: 18 }), { type: 'resize', cols: 80, rows: 24, cellWidth: 9, cellHeight: 18 });
+  assert.equal(parseWebviewMessage({ type: 'resize', cols: 80, rows: 24 }), undefined);
+  assert.equal(parseWebviewMessage({ type: 'resize', cols: 0, rows: 24, cellWidth: 9, cellHeight: 18 }), undefined);
+  assert.equal(parseWebviewMessage({ type: 'resize', cols: 1.5, rows: 24, cellWidth: 9, cellHeight: 18 }), undefined);
+  assert.deepEqual(parseWebviewMessage({ type: 'input', data: '\x9b', binary: true }), { type: 'input', data: '\x9b', binary: true });
+  assert.deepEqual(parseWebviewMessage({ type: 'theme', foreground: 1, background: 2, cursor: 3, palette: Array(16).fill(0) }), {
+    type: 'theme',
+    foreground: 1,
+    background: 2,
+    cursor: 3,
+    palette: Array(16).fill(0),
+  });
+  assert.equal(parseWebviewMessage({ type: 'theme', foreground: 1, background: 2, cursor: 3, palette: [1] }), undefined);
   assert.equal(parseWebviewMessage({ type: 'input', data: 5 }), undefined);
   assert.equal(parseWebviewMessage({ type: 'evil' }), undefined);
   assert.equal(parseWebviewMessage(null), undefined);
-  assert.deepEqual(parseWebviewMessage({ type: 'paste', bracketed: 'yes' }), { type: 'paste', bracketed: false });
+  assert.deepEqual(parseWebviewMessage({ type: 'paste', bracketed: 'yes' }), { type: 'paste' });
+  assert.deepEqual(parseWebviewMessage({ type: 'paste', text: 'x' }), { type: 'paste', text: 'x' });
   assert.equal(parseWebviewMessage({ type: 'openLink', kind: 'javascript', text: 'x' }), undefined);
 });
 
 test('paste preparation', () => {
-  assert.equal(preparePaste('a\nb\r\nc'), 'a\rb\rc');
-  assert.equal(preparePaste('x\x1b[201~rm -rf /\x1b[200~'), 'xrm -rf /');
   assert.ok(isMultiline('a\nb'));
   assert.ok(!isMultiline('one line\n'));
 });
@@ -76,41 +84,15 @@ test('colour normalisation', () => {
   assert.equal(normalizeColor('blue'), undefined);
 });
 
-test('prompt mark splitting', () => {
-  const m = new PromptMarks();
-  const enc = new TextEncoder();
-  const segs = m.split(enc.encode('out\x1b]133;D;1\x07\x1b]133;A\x07$ \x1b]133;B\x07'));
-  assert.deepEqual(segs.map((s) => s.markAfter), ['D;1', 'A', 'B', undefined]);
-  assert.equal(new TextDecoder().decode(segs[0].bytes), 'out\x1b]133;D;1\x07');
-  assert.equal(segs[3].bytes.length, 0);
-  // An unterminated sequence stays in one piece.
-  assert.equal(m.split(enc.encode('a\x1b]133;A')).length, 1);
-});
-
-test('splitHyperlinks ends a segment at each OSC 8 sequence', () => {
-  const enc = (t: string) => new TextEncoder().encode(t);
-  const dec = (b: Uint8Array) => new TextDecoder().decode(b);
-  const parts = splitHyperlinks(enc('a\x1b]8;;https://x.example/1\x1b\\link\x1b]8;;\x07b\x1b]8;id=7;file://h/p\x07c\x1b]8;;'));
-  assert.deepEqual(
-    parts.map((p) => [dec(p.bytes), p.linkAfter]),
-    [
-      ['a\x1b]8;;https://x.example/1\x1b\\', 'https://x.example/1'],
-      ['link\x1b]8;;\x07', ''],
-      ['b\x1b]8;id=7;file://h/p\x07', 'file://h/p'],
-      // An unterminated sequence stays in the last segment.
-      ['c\x1b]8;;', undefined],
-    ],
-  );
-});
-
-test('cellRuns and findLink match linked cells to recorded links', () => {
-  assert.deepEqual(cellRuns([false, true, true, false, true]), [{ start: 1, end: 3 }, { start: 4, end: 5 }]);
-  const records = [
-    { uri: 'https://a', start: { line: 3, x: 2 }, end: { line: 3, x: 5 }, text: 'AAA' },
-    { uri: 'https://b', start: { line: 3, x: 6 }, end: { line: 4, x: 2 }, text: 'BBBBBB' },
-  ];
-  assert.equal(findLink(records, 3, { start: 2, end: 5 }, 'AAA')?.uri, 'https://a');
-  assert.equal(findLink(records, 4, { start: 0, end: 2 }, 'BB')?.uri, 'https://b', 'second row of a wrapped link');
-  assert.equal(findLink(records, 9, { start: 0, end: 3 }, 'AAA')?.uri, 'https://a', 'moved by reflow: found by text');
-  assert.equal(findLink(records, 9, { start: 0, end: 3 }, 'ZZZ'), undefined, 'unknown run: no link');
+test('theme palette and minimum contrast', () => {
+  const css = { getPropertyValue: (n: string) => ({ '--vscode-terminal-background': '#1e1e1e', '--vscode-terminal-ansiRed': '#ff0000' })[n] ?? '' };
+  const t = readTheme(css, { blue: '#0000ff' });
+  const pal = themePalette(t);
+  assert.equal(pal.length, 16);
+  assert.equal(pal[1], 0xff0000);
+  assert.equal(pal[4], 0x0000ff);
+  // Dark grey on black is raised to 4.5:1.
+  const fg = ensureContrast(0x333333, 0x000000, 4.5);
+  assert.ok(contrast(fg, 0x000000) >= 4.5);
+  assert.equal(ensureContrast(0xffffff, 0x000000, 4.5), 0xffffff);
 });

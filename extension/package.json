@@ -1,7 +1,7 @@
 {
   "name": "code-gty",
   "displayName": "code-gty: Ghostty Terminal",
-  "description": "A Ghostty-emulated terminal that opens as an editor tab.",
+  "description": "A Ghostty-emulated terminal (libghostty-vt) that opens as an editor tab.",
   "version": "0.1.0",
   "publisher": "code-gty",
   "license": "MIT",
@@ -107,13 +107,40 @@
         "codeGty.colors": {
           "type": "object",
           "default": {},
-          "markdownDescription": "Overrides for theme colours, keyed by ghostty-web theme names (`background`, `foreground`, `cursor`, `red`, `brightBlue`, ...)."
+          "markdownDescription": "Overrides for theme colours: `background`, `foreground`, `cursor`, `cursorAccent`, `selectionBackground`, `selectionForeground`, and the ANSI colours `black`, `red`, ... `brightWhite`."
         },
         "codeGty.osc52": {
           "type": "string",
           "enum": ["off", "write", "readWrite"],
           "default": "write",
-          "markdownDescription": "Whether programs in the terminal may set (`write`) or also read (`readWrite`) the clipboard through OSC 52."
+          "markdownDescription": "Whether programs in the terminal may set (`write`) or also read (`readWrite`) the clipboard through OSC 52 and the Kitty clipboard protocol (OSC 5522). Reads are answered from VS Code's clipboard."
+        },
+        "codeGty.notifications": {
+          "type": "string",
+          "enum": ["off", "unfocused", "always"],
+          "default": "unfocused",
+          "markdownDescription": "Show desktop notifications from programs (OSC 9, OSC 777) and program status changes that need attention (OSC 7501): `unfocused` only when the terminal tab is not focused."
+        },
+        "codeGty.progress": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show progress reported by programs (OSC 9;4) in the status bar and the tab title."
+        },
+        "codeGty.kittyKeyboard": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Let programs turn on the Kitty keyboard protocol. Turn off to troubleshoot key handling in a program."
+        },
+        "codeGty.images": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show images sent with the Kitty graphics protocol."
+        },
+        "codeGty.answerback": {
+          "type": "string",
+          "default": "",
+          "maxLength": 256,
+          "markdownDescription": "Reply to ENQ (0x05 in the output). Empty sends nothing."
         },
         "codeGty.flowControlWindow": {
           "type": "number",
@@ -125,7 +152,7 @@
           "type": "number",
           "default": 2097152,
           "minimum": 0,
-          "description": "Bytes of recent output kept per terminal to restore a recreated tab."
+          "description": "Bytes of recent raw output the sidecar keeps per terminal, as a fallback for recovery. Tabs are restored from the terminal engine itself."
         },
         "codeGty.term": {
           "type": "string",
@@ -135,7 +162,7 @@
         "codeGty.retainContextWhenHidden": {
           "type": "boolean",
           "default": true,
-          "description": "Keep a background tab's terminal alive in memory. Turning this off saves memory; content is then restored from the replay buffer."
+          "description": "Keep a background tab's webview alive in memory. Turning this off saves memory: the tab is redrawn exactly from the terminal engine in the extension host when shown again."
         },
         "codeGty.sidecarPath": {
           "type": ["string", "null"],
@@ -153,7 +180,7 @@
     "lint": "eslint .",
     "test:unit": "node --import tsx --test test/unit/*.test.ts",
     "test:conformance": "node --import tsx --test test/conformance/*.test.ts",
-    "test:webview": "node --import tsx --test test/webview/*.test.ts",
+    "test:webview": "node --import tsx --test --test-concurrency=1 test/webview/*.test.ts",
     "test:integration": "node test/integration/run.mjs",
     "test:e2e": "node --import tsx --test test/e2e/*.test.ts",
     "package": "vsce package --no-dependencies"
@@ -166,7 +193,6 @@
     "@vscode/vsce": "3.7.0",
     "esbuild": "0.25.12",
     "eslint": "9.39.1",
-    "ghostty-web": "0.4.0",
     "playwright-core": "1.56.1",
     "tsx": "4.20.6",
     "typescript": "5.9.3",

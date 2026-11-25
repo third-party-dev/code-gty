@@ -21,6 +21,14 @@ export interface GtyTerminal {
   readonly processId: Thenable<number | undefined>;
   /** Last directory reported by shell integration (OSC 7), if any. */
   readonly cwd: string | undefined;
+  /** Exit code of the last command (OSC 133;D), if the shell reported one. */
+  readonly lastExitCode: number | undefined;
+  /** The visible screen as plain text. */
+  readScreen(): string;
+  /** Screen and scrollback as plain text (last `lines` lines). */
+  readOutput(lines?: number): Thenable<string>;
+  /** Output of the most recent command, when shell integration marks commands. */
+  lastCommandOutput(): string | undefined;
   sendText(text: string, addNewLine?: boolean): void;
   show(preserveFocus?: boolean): void;
   dispose(): void;
@@ -35,6 +43,12 @@ export interface CodeGtyApi {
   createTerminal(options?: GtyTerminalOptions): GtyTerminal | undefined;
   /** Environment for terminals started from now on; `null` removes a variable. Dispose to withdraw. */
   contributeEnvironment(key: string, variables: Record<string, string | null>): vscode.Disposable;
+  /**
+   * OSC sequences the terminal does not implement (for example a custom
+   * `ESC ] 7400 ; ... ST`), with the OSC number as `id`. `content` is
+   * everything after `ESC ]`, raw. APC sequences come with `id` 'apc'.
+   */
+  readonly onDidReceiveSequence: vscode.Event<{ terminal: GtyTerminal; id: string; content: Uint8Array }>;
 }
 
 export function createApi(manager: TerminalManager): CodeGtyApi {
@@ -52,6 +66,12 @@ export function createApi(manager: TerminalManager): CodeGtyApi {
         get cwd() {
           return s.cwd;
         },
+        get lastExitCode() {
+          return s.lastExitCode;
+        },
+        readScreen: () => s.screenText(),
+        readOutput: (lines) => s.recentOutput(lines),
+        lastCommandOutput: () => s.lastCommandOutput(),
         sendText: (text, addNewLine = true) => s.sendText(text, addNewLine),
         show: (preserveFocus) => s.panel.reveal(undefined, preserveFocus),
         dispose: () => s.panel.dispose(),
@@ -79,5 +99,19 @@ export function createApi(manager: TerminalManager): CodeGtyApi {
       return s ? wrap(s) : undefined;
     },
     contributeEnvironment: (key, variables) => manager.contributeEnvironment(key, variables),
+    onDidReceiveSequence: (listener, thisArgs, disposables) =>
+      manager.onDidReceiveSequence(
+        ({ session, sequence }) => {
+          const content = sequence.content;
+          let id = 'apc';
+          if (sequence.kind === 'osc') {
+            const semi = content.indexOf(0x3b);
+            id = new TextDecoder().decode(semi < 0 ? content : content.subarray(0, semi));
+          }
+          listener.call(thisArgs, { terminal: wrap(session), id, content });
+        },
+        undefined,
+        disposables,
+      ),
   };
 }

@@ -9,7 +9,13 @@
   },
   "include": [
     "../src/**/*.ts",
+    "../vt/**/*.ts",
+    "../term/**/*.ts",
+    "unit/**/*.ts",
+    "conformance/**/*.ts",
     "webview/**/*.ts",
     "e2e/**/*.ts"
-  ]
+  ],
+  // lib.dom declares WebAssembly; the host-only shim would clash with it.
+  "exclude": ["../src/types/**"]
 }

@@ -1,16 +1,13 @@
-// Webview side of a code-gty terminal: ghostty-web plus the glue that makes it
-// behave like VS Code's terminal. It never calls VS Code APIs; it only posts
-// messages to the extension host.
+// Webview side of a code-gty terminal: gty-term (our libghostty-vt terminal)
+// plus the glue that makes it behave like VS Code's terminal. It never calls
+// VS Code APIs; it only posts messages to the extension host.
 
-import { FitAddon, Ghostty, ILink, ITheme, Terminal } from 'ghostty-web';
-import { KeyEventLike, KeyMatcher, parseKey, matches } from '../src/shared/keys';
+import { KeyEventLike, KeyMatcher, matches, parseKey } from '../src/shared/keys';
 import type { HostToWebview, PersistedState, WebviewConfig, WebviewToHost } from '../src/shared/messages';
-import { preparePaste } from '../src/shared/paste';
-import { findFileLinks } from './fileLinks';
-import { FindController } from './find';
-import { cellRuns, Hyperlinks, splitHyperlinks } from './hyperlinks';
-import { PromptMarks } from './marks';
-import { readTheme, sameTheme } from './theme';
+import { Vt } from '../vt/core';
+import { loadVt } from '../vt/loader';
+import { GtyTerminal, TermOptions } from '../term/terminal';
+import { hexToRgb, readTheme, sameTheme, Theme, themePalette } from '../term/theme';
 
 interface VsCodeApi {
   postMessage(msg: WebviewToHost): void;
@@ -22,21 +19,18 @@ declare function acquireVsCodeApi(): VsCodeApi;
 const vscode = acquireVsCodeApi();
 const post = (m: WebviewToHost) => vscode.postMessage(m);
 const container = document.getElementById('terminal') as HTMLDivElement;
+const findEl = document.getElementById('find') as HTMLDivElement;
 const noticeEl = document.getElementById('notice') as HTMLDivElement;
 const a11yEl = document.getElementById('a11y') as HTMLDivElement;
 
-let ghostty: Ghostty | undefined;
-let term: Terminal | undefined;
-let fit: FitAddon | undefined;
+let vt: Vt | undefined;
+let term: GtyTerminal | undefined;
 let config: WebviewConfig | undefined;
-let theme: ITheme | undefined;
+let theme: Theme | undefined;
 let passThrough = new KeyMatcher([]);
 let shellKeys = new KeyMatcher([]);
 let chordPending = false;
 let exited = false;
-const marks = new PromptMarks();
-const hyperlinks = new Hyperlinks();
-let find: FindController | undefined;
 /** Events the workbench should see; everything else stops at the document. */
 const toWorkbench = new WeakSet<Event>();
 
@@ -47,129 +41,52 @@ function log(level: 'info' | 'warn' | 'error', message: string): void {
 window.addEventListener('error', (e) => log('error', `${e.message} at ${e.filename}:${e.lineno}`));
 window.addEventListener('unhandledrejection', (e) => log('error', `unhandled rejection: ${String(e.reason)}`));
 
-// ghostty-web's link providers call window.open; route that to the host so
-// links open through VS Code (port-forwarded when remote).
-window.open = ((url?: string | URL) => {
-  if (url) post({ type: 'openLink', kind: 'url', text: String(url) });
-  return null;
-}) as typeof window.open;
-
 function showNotice(text: string): void {
   noticeEl.textContent = text;
   noticeEl.hidden = false;
 }
 
-// ---- terminal lifecycle --------------------------------------------------
+// ---- configuration ------------------------------------------------------------
 
-// ghostty-web measures the cell size once, when the font is set, so the faces
-// must be loaded first or the grid is sized for a fallback font. Loads the
-// regular, bold and italic faces of the configured font.
-async function loadFonts(stack: string, size: number): Promise<void> {
+/** The cell is measured from the font, so the faces must load first. */
+async function loadFonts(cfg: WebviewConfig): Promise<void> {
   if (!document.fonts) return;
-  const styles = ['', 'bold ', 'italic ', 'italic bold '];
-  const loads = styles.map((s) => document.fonts.load(`${s}${size}px ${stack}`, 'M'));
+  const styles = [`${cfg.fontWeight} `, `${cfg.fontWeightBold} `, `italic ${cfg.fontWeight} `, `italic ${cfg.fontWeightBold} `];
+  const loads = styles.map((s) => document.fonts.load(`${s}${cfg.fontSize}px ${cfg.fontFamily}`, 'M'));
   const timeout = new Promise<void>((resolve) => setTimeout(resolve, 3000));
   await Promise.race([Promise.allSettled(loads), timeout]);
 }
 
-function computeTheme(): ITheme {
+function termOptions(cfg: WebviewConfig): TermOptions {
+  return {
+    fontFamily: cfg.fontFamily,
+    fontSize: cfg.fontSize,
+    lineHeight: cfg.lineHeight,
+    letterSpacing: cfg.letterSpacing,
+    fontWeight: cfg.fontWeight,
+    fontWeightBold: cfg.fontWeightBold,
+    cursorStyle: cfg.cursorStyle,
+    cursorWidth: cfg.cursorWidth,
+    cursorBlink: cfg.cursorBlink,
+    drawBoldTextInBrightColors: cfg.drawBoldTextInBrightColors,
+    minimumContrastRatio: cfg.minimumContrastRatio,
+    customGlyphs: cfg.customGlyphs,
+    scrollback: cfg.scrollback,
+    wordSeparators: cfg.wordSeparators,
+    macOptionIsMeta: cfg.macOptionIsMeta,
+    isMac: cfg.platform === 'mac',
+    kittyKeyboard: cfg.kittyKeyboard,
+    images: cfg.images,
+    padding: 0,
+  };
+}
+
+function computeTheme(): Theme {
   return readTheme(getComputedStyle(document.documentElement), config?.colors ?? {});
 }
 
-function buildTerminal(): void {
-  if (!ghostty || !config) return;
-  find?.dispose();
-  fit?.dispose();
-  term?.dispose();
-  container.replaceChildren();
-  marks.clear();
-  hyperlinks.clear();
-  theme = computeTheme();
-  document.body.style.backgroundColor = theme.background ?? '';
-
-  const t = new Terminal({
-    ghostty,
-    fontFamily: config.fontFamily,
-    fontSize: config.fontSize,
-    cursorStyle: config.cursorStyle,
-    cursorBlink: config.cursorBlink,
-    scrollback: config.scrollback,
-    theme,
-    smoothScrollDuration: 0,
-  });
-  term = t;
-  t.open(container);
-  fit = new FitAddon();
-  t.loadAddon(fit);
-  fit.fit();
-  fit.observeResize();
-
-  t.onResize(({ cols, rows }) => post({ type: 'resize', cols, rows }));
-  t.onData((data) => post({ type: 'input', data }));
-  t.onBell(() => bell());
-  t.onSelectionChange(() => {
-    if (config?.copyOnSelection && t.hasSelection()) post({ type: 'copy', text: t.getSelection() });
-  });
-  t.attachCustomKeyEventHandler(onKey);
-  t.registerLinkProvider({
-    provideLinks(y, callback) {
-      const line = t.buffer.active.getLine(y)?.translateToString(true);
-      if (!line) return callback(undefined);
-      const links: ILink[] = findFileLinks(line).map((l) => ({
-        text: l.text,
-        range: { start: { x: l.start, y }, end: { x: l.end - 1, y } },
-        activate(ev: MouseEvent) {
-          if (linkModifierHeld(ev)) post({ type: 'openLink', kind: 'file', text: l.text });
-        },
-      }));
-      callback(links.length ? links : undefined);
-    },
-  });
-  // OSC 8 hyperlinks: ghostty-web's own provider cannot resolve their URIs.
-  t.registerLinkProvider({
-    provideLinks(y, callback) {
-      const line = t.buffer.active.getLine(y);
-      if (!line) return callback(undefined);
-      const linked: boolean[] = [];
-      for (let x = 0; x < line.length; x++) linked.push((line.getCell(x)?.getHyperlinkId() ?? 0) !== 0);
-      const links: ILink[] = [];
-      for (const run of cellRuns(linked)) {
-        const rec = hyperlinks.find(t, y, run);
-        if (!rec) continue;
-        links.push({
-          text: rec.uri,
-          range: { start: { x: run.start, y }, end: { x: run.end - 1, y } },
-          activate(ev: MouseEvent) {
-            if (linkModifierHeld(ev)) post({ type: 'openLink', kind: 'url', text: rec.uri });
-          },
-        });
-      }
-      callback(links.length ? links : undefined);
-    },
-  });
-  find = new FindController(t, document.getElementById('find') as HTMLDivElement);
-
-  post({ type: 'resize', cols: t.cols, rows: t.rows });
-}
-
-function linkModifierHeld(ev: MouseEvent): boolean {
-  if (config?.linkModifier === 'alt') return ev.altKey;
-  return config?.platform === 'mac' ? ev.metaKey : ev.ctrlKey;
-}
-
-/** Writes PTY output, recording prompt marks (OSC 133;A) at their exact line. */
-function writeOutput(data: Uint8Array): void {
-  const t = term;
-  if (!t) return;
-  for (const segment of marks.split(data)) {
-    for (const part of splitHyperlinks(segment.bytes)) {
-      if (part.bytes.length) t.write(part.bytes);
-      if (part.linkAfter !== undefined) hyperlinks.record(t, part.linkAfter);
-    }
-    if (segment.markAfter) marks.record(t, segment.markAfter);
-  }
-  find?.invalidate();
-  scheduleA11y();
+function sendTheme(t: Theme): void {
+  post({ type: 'theme', foreground: hexToRgb(t.foreground), background: hexToRgb(t.background), cursor: hexToRgb(t.cursor), palette: themePalette(t) });
 }
 
 function applyConfig(next: WebviewConfig): void {
@@ -178,49 +95,46 @@ function applyConfig(next: WebviewConfig): void {
   passThrough = new KeyMatcher(next.passThroughKeys);
   shellKeys = new KeyMatcher(next.shellKeys);
   if (!term || !prev) return;
-  // Palette and scrollback live inside the WASM terminal: rebuild for those.
   const nextTheme = computeTheme();
-  if (prev.scrollback !== next.scrollback || !sameTheme(theme, nextTheme)) {
-    rebuild();
-    return;
+  if (!sameTheme(theme, nextTheme)) {
+    theme = nextTheme;
+    term.setTheme(nextTheme);
+    sendTheme(nextTheme);
+    document.body.style.backgroundColor = nextTheme.background;
   }
-  if (prev.fontFamily !== next.fontFamily || prev.fontSize !== next.fontSize) {
-    const stack = next.fontFamily;
-    void loadFonts(stack, next.fontSize).then(() => {
-      if (!term || config !== next) return;
-      term.options.fontFamily = stack;
-      term.options.fontSize = next.fontSize;
-      fit?.fit();
+  const fontChanged = prev.fontFamily !== next.fontFamily || prev.fontSize !== next.fontSize || prev.fontWeight !== next.fontWeight || prev.fontWeightBold !== next.fontWeightBold;
+  if (fontChanged) {
+    void loadFonts(next).then(() => {
+      if (term && config === next) term.setOptions(termOptions(next));
     });
+  } else {
+    term.setOptions(termOptions(next));
   }
-  if (prev.cursorStyle !== next.cursorStyle) term.options.cursorStyle = next.cursorStyle;
-  if (prev.cursorBlink !== next.cursorBlink) term.options.cursorBlink = next.cursorBlink;
-  fit?.fit();
 }
 
-/** Recreates the terminal and asks the host to replay the session into it. */
-function rebuild(): void {
-  if (!term) return;
-  buildTerminal();
-  if (!exited) post({ type: 'reattach' });
-}
-
-// Theme changes: VS Code updates the root style and body class.
+// Theme changes: VS Code updates the root style and body class. Colours are
+// set on both engines live, so nothing is rebuilt.
 let themeTimer: ReturnType<typeof setTimeout> | undefined;
 const themeObserver = new MutationObserver(() => {
   clearTimeout(themeTimer);
   themeTimer = setTimeout(() => {
-    if (term && !sameTheme(theme, computeTheme())) rebuild();
+    if (!term) return;
+    const next = computeTheme();
+    if (sameTheme(theme, next)) return;
+    theme = next;
+    term.setTheme(next);
+    sendTheme(next);
+    document.body.style.backgroundColor = next.background;
   }, 50);
 });
 themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'class'] });
 themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
 
-// ---- keyboard ------------------------------------------------------------
+// ---- keyboard ---------------------------------------------------------------------
 
 function sendToWorkbench(e: KeyboardEvent): boolean {
   toWorkbench.add(e);
-  return true; // tells ghostty-web not to handle it
+  return true;
 }
 
 const isMac = () => config?.platform === 'mac';
@@ -230,9 +144,15 @@ const key = (spec: string, e: KeyEventLike) => {
   return !!k && matches(k, e);
 };
 
-function onKey(e: KeyboardEvent): boolean {
-  if (e.type !== 'keydown' || !term) return false;
+/** Actions and pass-through rules. Returns true when the terminal must not encode the key. */
+function keyFilter(e: KeyboardEvent): boolean {
   const t = term;
+  if (!t) return true;
+  const handled = () => {
+    e.preventDefault();
+    e.stopPropagation();
+    return true;
+  };
 
   if (chordPending) {
     chordPending = false;
@@ -245,31 +165,41 @@ function onKey(e: KeyboardEvent): boolean {
       post({ type: 'copy', text: t.getSelection() });
       if (!isMac()) t.clearSelection();
     }
-    return true;
+    return handled();
   }
   if (isMac() ? key('cmd+v', e) : key('ctrl+shift+v', e) || key('shift+insert', e) || (isWin() && key('ctrl+v', e))) {
-    post({ type: 'paste', bracketed: t.hasBracketedPaste() });
-    return true;
+    // The host reads the clipboard: a webview's own paste event is not
+    // reliable for keyboard shortcuts in every VS Code host.
+    post({ type: 'paste' });
+    return handled();
   }
   if (isMac() ? key('cmd+f', e) : key('ctrl+f', e) && !shellKeys.test(e)) {
-    find?.open();
-    return true;
+    t.find.open();
+    return handled();
   }
   if (isMac() && key('cmd+k', e)) {
-    clearTerminal();
-    return true;
+    post({ type: 'clear' });
+    return handled();
   }
   if (isMac() ? key('cmd+a', e) : key('ctrl+shift+a', e)) {
     t.selectAll();
-    return true;
+    return handled();
   }
   if (isMac() ? key('cmd+up', e) : key('ctrl+up', e) && !shellKeys.test(e)) {
-    scrollToCommand('previous');
-    return true;
+    t.scrollToPrompt(-1);
+    return handled();
   }
   if (isMac() ? key('cmd+down', e) : key('ctrl+down', e) && !shellKeys.test(e)) {
-    scrollToCommand('next');
-    return true;
+    t.scrollToPrompt(1);
+    return handled();
+  }
+  if (key('shift+pageup', e)) {
+    t.scrollLines(-t.mirror!.rows + 1);
+    return handled();
+  }
+  if (key('shift+pagedown', e)) {
+    t.scrollLines(t.mirror!.rows - 1);
+    return handled();
   }
 
   if (shellKeys.test(e)) return false;
@@ -281,25 +211,7 @@ function onKey(e: KeyboardEvent): boolean {
   if (passThrough.test(e)) return sendToWorkbench(e);
   // On macOS, Cmd combinations belong to the app, not the shell.
   if (isMac() && e.metaKey) return sendToWorkbench(e);
-
-  if (isMac() && config?.macOptionIsMeta && e.altKey && !e.ctrlKey && !e.metaKey) {
-    const ch = metaChar(e);
-    if (ch !== undefined) {
-      post({ type: 'input', data: `\x1b${ch}` });
-      return true;
-    }
-  }
   return false;
-}
-
-function metaChar(e: KeyboardEvent): string | undefined {
-  if (/^Key[A-Z]$/.test(e.code)) {
-    const c = e.code.slice(3);
-    return e.shiftKey ? c : c.toLowerCase();
-  }
-  if (/^Digit[0-9]$/.test(e.code)) return e.code.slice(5);
-  const map: Record<string, string> = { Period: '.', Comma: ',', Slash: '/', Backspace: '\x7f', Minus: '-', Equal: '=' };
-  return map[e.code];
 }
 
 // Keys handled by the terminal stop here, so the workbench does not also act
@@ -310,16 +222,15 @@ document.addEventListener('keydown', (e) => {
   e.stopPropagation();
 });
 
-// ---- clipboard and mouse -------------------------------------------------
+// ---- clipboard and mouse -------------------------------------------------------
 
-// Take paste events before ghostty-web, so pastes are bracketed and checked.
 container.addEventListener(
   'paste',
   (e) => {
     e.preventDefault();
     e.stopImmediatePropagation();
     const text = e.clipboardData?.getData('text/plain');
-    if (text) post({ type: 'paste', text, bracketed: term?.hasBracketedPaste() ?? false });
+    post(text ? { type: 'paste', text } : { type: 'paste' });
   },
   { capture: true },
 );
@@ -335,20 +246,25 @@ container.addEventListener('contextmenu', (e) => {
         post({ type: 'copy', text: t.getSelection() });
         t.clearSelection();
       } else {
-        post({ type: 'paste', bracketed: t.hasBracketedPaste() });
+        post({ type: 'paste' });
       }
       break;
     case 'paste':
       e.preventDefault();
       e.stopPropagation();
-      post({ type: 'paste', bracketed: t.hasBracketedPaste() });
+      post({ type: 'paste' });
       break;
     case 'nothing':
       e.preventDefault();
       e.stopPropagation();
       break;
+    case 'selectWord': {
+      // Select the word under the pointer, then let VS Code show the menu.
+      const c = t.cellAt(e);
+      if (!t.hasSelection()) t.selectWordAt(c.x, c.y);
+      break;
+    }
     default:
-      // 'default' and 'selectWord': VS Code shows the webview/context menu.
       break;
   }
 });
@@ -356,18 +272,7 @@ container.addEventListener('contextmenu', (e) => {
 window.addEventListener('focus', () => post({ type: 'focusChanged', focused: true }));
 window.addEventListener('blur', () => post({ type: 'focusChanged', focused: false }));
 
-// ---- actions -------------------------------------------------------------
-
-function clearTerminal(): void {
-  // Like the built-in: keep the prompt line, drop everything above it.
-  term?.clear();
-  marks.clear();
-  hyperlinks.clear();
-}
-
-function scrollToCommand(direction: 'previous' | 'next'): void {
-  if (term) marks.scroll(term, direction);
-}
+// ---- bell and accessibility -------------------------------------------------------
 
 let audio: AudioContext | undefined;
 function bell(): void {
@@ -389,61 +294,90 @@ function bell(): void {
   }
 }
 
-function visibleText(maxLines?: number): string {
-  const t = term;
-  if (!t) return '';
-  const buf = t.buffer.active;
-  const total = buf.length;
-  const from = maxLines === undefined ? Math.max(0, total - t.rows) : Math.max(0, total - maxLines);
-  const lines: string[] = [];
-  for (let y = from; y < total; y++) lines.push(buf.getLine(y)?.translateToString(true) ?? '');
-  while (lines.length && !lines[lines.length - 1]) lines.pop();
-  return lines.join('\n');
-}
-
 let a11yTimer: ReturnType<typeof setTimeout> | undefined;
 function scheduleA11y(): void {
   if (!config?.accessibility || a11yTimer) return;
   a11yTimer = setTimeout(() => {
     a11yTimer = undefined;
-    a11yEl.textContent = visibleText();
+    if (term) a11yEl.textContent = term.visibleText();
   }, 500);
 }
 
-// ---- messages from the host ---------------------------------------------
+function linkModifierHeld(ev: MouseEvent): boolean {
+  if (config?.linkModifier === 'alt') return ev.altKey;
+  return config?.platform === 'mac' ? ev.metaKey : ev.ctrlKey;
+}
+
+// ---- terminal lifecycle --------------------------------------------------------
+
+async function init(cfg: WebviewConfig): Promise<void> {
+  config = cfg;
+  passThrough = new KeyMatcher(cfg.passThroughKeys);
+  shellKeys = new KeyMatcher(cfg.shellKeys);
+  if (term) return;
+  try {
+    if (!vt) {
+      const res = await fetch(document.body.dataset.wasm!);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      vt = await loadVt(await res.arrayBuffer(), { log: (l) => log('info', `vt: ${l}`) });
+      log('info', `libghostty-vt ${vt.version} ${JSON.stringify(vt.features)}`);
+    }
+  } catch (e) {
+    showNotice(`Could not load the terminal engine: ${(e as Error).message}`);
+    log('error', `wasm load failed: ${(e as Error).stack ?? e}`);
+    return;
+  }
+  await loadFonts(cfg);
+  theme = computeTheme();
+  document.body.style.backgroundColor = theme.background;
+  term = new GtyTerminal(vt, container, findEl, termOptions(cfg), theme, {
+    input: (data, binary) => post({ type: 'input', data, binary }),
+    requestResize: (cols, rows, cellWidth, cellHeight) => post({ type: 'resize', cols, rows, cellWidth, cellHeight }),
+    bell,
+    selectionChanged: (text) => {
+      if (config?.copyOnSelection && text) post({ type: 'copy', text });
+    },
+    openLink: (kind, text) => post({ type: 'openLink', kind, text }),
+    keyFilter,
+    linkModifierHeld,
+    log,
+    outputProcessed: scheduleA11y,
+  });
+  sendTheme(theme);
+  term.fit();
+}
+
+/** Messages wait for init (WASM and fonts) so output is never applied out of order. */
+let chain: Promise<void> = Promise.resolve();
+function enqueue(fn: () => void | Promise<void>): void {
+  chain = chain.then(fn).catch((e) => log('error', `message handling: ${(e as Error).stack ?? e}`));
+}
 
 window.addEventListener('message', (event: MessageEvent<HostToWebview>) => {
   const msg = event.data;
+  if (msg.type === 'init') return enqueue(() => init(msg.config));
+  enqueue(() => handle(msg));
+});
+
+function handle(msg: HostToWebview): void {
   switch (msg.type) {
-    case 'init':
-      void init(msg.config);
-      break;
     case 'config':
       applyConfig(msg.config);
       break;
-    case 'output': {
-      writeOutput(msg.data);
+    case 'attach':
+      term?.attach(msg.snapshot, msg.cols, msg.rows);
+      term?.fit();
+      break;
+    case 'output':
+      term?.write(msg.data);
       // Ack once parsed: parsing is the cost that backpressure must bound.
-      post({ type: 'ack', bytes: msg.data.length });
+      if (msg.ack !== false) post({ type: 'ack', bytes: msg.data.length });
       break;
-    }
-    case 'replay':
-      term?.reset();
-      marks.clear();
-      hyperlinks.clear();
-      if (msg.truncated) term?.write('\x1b[2m[earlier output not kept]\x1b[0m\r\n');
-      writeOutput(msg.data);
-      post({ type: 'ack', bytes: msg.data.length });
-      break;
-    case 'paste':
-      term?.paste(preparePaste(msg.text));
-      term?.focus();
+    case 'resized':
+      term?.applyResize(msg.cols, msg.rows);
       break;
     case 'focus':
       term?.focus();
-      break;
-    case 'clear':
-      clearTerminal();
       break;
     case 'selectAll':
       term?.selectAll();
@@ -452,42 +386,19 @@ window.addEventListener('message', (event: MessageEvent<HostToWebview>) => {
       if (term?.hasSelection()) post({ type: 'copy', text: term.getSelection() });
       break;
     case 'find':
-      find?.open();
+      term?.find.open();
       break;
     case 'scrollToCommand':
-      scrollToCommand(msg.direction);
-      break;
-    case 'notice':
-      term?.write(`\x1b[2m──── ${msg.text} ────\x1b[0m\r\n`);
+      term?.scrollToPrompt(msg.direction === 'previous' ? -1 : 1);
       break;
     case 'exit':
       exited = true;
-      if (term) term.write(`\r\n\x1b[2m${msg.message}\x1b[0m\r\n`);
-      else showNotice(msg.message);
-      break;
-    case 'requestRecentOutput':
-      post({ type: 'recentOutput', text: visibleText(500) });
+      if (!term?.mirror) showNotice(msg.message);
       break;
     case 'persist':
       vscode.setState(msg.state);
       break;
   }
-});
-
-async function init(cfg: WebviewConfig): Promise<void> {
-  const firstInit = !config;
-  config = cfg;
-  passThrough = new KeyMatcher(cfg.passThroughKeys);
-  shellKeys = new KeyMatcher(cfg.shellKeys);
-  try {
-    ghostty ??= await Ghostty.load(document.body.dataset.wasm);
-  } catch (e) {
-    showNotice(`Could not load the terminal engine: ${(e as Error).message}`);
-    log('error', `wasm load failed: ${(e as Error).stack ?? e}`);
-    return;
-  }
-  await loadFonts(cfg.fontFamily, cfg.fontSize);
-  if (firstInit || !term) buildTerminal();
 }
 
 // Read-only hooks for the Playwright tests; only present when a test page asks.
@@ -496,13 +407,11 @@ if ((window as unknown as { __gtyEnableTestHooks?: boolean }).__gtyEnableTestHoo
     get term() {
       return term;
     },
-    get marks() {
-      return marks.all;
+    get exited() {
+      return exited;
     },
-    get hyperlinks() {
-      return hyperlinks.all;
-    },
-    text: () => visibleText(),
+    text: () => term?.visibleText() ?? '',
+    selection: () => term?.getSelection() ?? '',
   };
 }
 

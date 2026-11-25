@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { applyPatch, buildEnvironment, localeFor, resolveVariables, sanitizeHostEnv } from '../../src/env';
 import { parseFileLink } from '../../src/linkParse';
-import { interpretOsc, OscScanner, parseFileUri } from '../../src/osc';
+import { parseFileUri } from '../../src/fileUri';
 import { resolveShell, findExecutable } from '../../src/profiles';
 import { encodeAck, encodeFrame, encodeJson, FrameDecoder, Kind } from '../../src/protocol';
 import { injectShellIntegration, shellKind } from '../../src/shellIntegration';
@@ -39,25 +39,11 @@ test('frame decoder rejects corrupt lengths', () => {
   assert.throws(() => new FrameDecoder().push(new Uint8Array([1, 0, 0, 0, 0])));
 });
 
-test('OSC scanner handles BEL, ST and splits', () => {
-  const s = new OscScanner();
-  assert.deepEqual(s.push(enc.encode('a\x1b]0;tit')), []);
-  assert.deepEqual(s.push(enc.encode('le\x07b\x1b]7;file://h/tmp/x y\x1b\\')), ['0;title', '7;file://h/tmp/x y']);
-  assert.deepEqual(s.push(enc.encode('\x1b[31m\x1b]133;A\x07')), ['133;A']);
-  // ESC inside an OSC aborts it; the next sequence still parses.
-  assert.deepEqual(s.push(enc.encode('\x1b]2;bad\x1b]2;good\x07')), ['2;good']);
-});
-
-test('OSC interpretation', () => {
-  assert.deepEqual(interpretOsc('2;vim'), { type: 'title', title: 'vim' });
-  assert.deepEqual(interpretOsc('7;file://host/home/a%20b'), { type: 'cwd', cwd: '/home/a b' });
-  assert.deepEqual(interpretOsc('52;c;aGVsbG8='), { type: 'clipboard', op: 'write', text: 'hello' });
-  assert.deepEqual(interpretOsc('52;c;?'), { type: 'clipboard', op: 'read' });
-  assert.deepEqual(interpretOsc('133;D;2'), { type: 'commandFinished', exitCode: 2 });
-  assert.deepEqual(interpretOsc('133;D'), { type: 'commandFinished', exitCode: undefined });
-  assert.deepEqual(interpretOsc('133;C'), { type: 'commandStart' });
-  assert.equal(interpretOsc('1337;foo'), undefined);
+test('OSC 7 working directory URIs', () => {
+  assert.equal(parseFileUri('file://host/home/a%20b'), '/home/a b');
   assert.equal(parseFileUri('file:///C:/Users/x'), 'C:/Users/x');
+  assert.equal(parseFileUri('/bare/path'), '/bare/path');
+  assert.equal(parseFileUri('http://x/y'), undefined);
 });
 
 test('variable resolution', () => {

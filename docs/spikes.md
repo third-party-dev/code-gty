@@ -2,6 +2,23 @@
 
 What the build has established so far for each spike in the plan, and what still needs a real machine.
 
+## libghostty-vt (PLAN-redo.md Phase 0): go
+
+Measured on Nov 24-25, 2026 with libghostty-vt 1.0.2, Node 22, x86_64 Linux. Section B below describes the ghostty-web build this replaced.
+
+| Question | Finding |
+| --- | --- |
+| Loading | Both the official `ghostty-vt-1.0.2-small.wasm` (freestanding, no imports) and our wasm32-wasi build (imports only `fd_write`) load in Node and in Chromium, Firefox and WebKit under the shipped CSP. |
+| Struct layout | `ghostty_type_json()` gives every offset, enum value, packed bitfield and callback signature; `scripts/gen-vt-layout.mjs` generates the subset the bindings use and the build fails if it drifts. On wasm32, structs are passed by pointer and struct returns become a hidden first out-pointer (XTVERSION and ENQ callbacks). |
+| Callbacks | A generated 60-byte WASM module per signature that imports the JS function and calls it, placed in the growable function table. Works in all three engines without `WebAssembly.Function`. |
+| Queries | Every query in `test.py` is answered, Kitty graphics included (`test/conformance/engine.test.ts`, real PTY). |
+| Kitty graphics | Disabled on freestanding targets. The wasm32-wasi build enables them, after two fixes: `src/os/stderr.zig` called libc `write` on WASI (patch 1), and `PageList.zig` only zeroed reused pages on *freestanding* WASM, so wasm32-wasi ReleaseSmall/ReleaseFast builds read stale page memory and trapped with "memory access out of bounds" after a few hundred KB of mixed output (patch 2; ReleaseSafe masked it by always zeroing). PNG decoding is ours (`vt/png.ts`), as the library requires. |
+| Reproducibility | `vt-wasm/build.sh` produced the same module bytes (sha256 `4715aa24…`) on the dev machine and in a clean Debian container. |
+| Parse throughput | 416 MB/s plain text, 68 MB/s with an SGR change every 5 characters (WASI build; the official module: 414 and 63). Parsing twice (host and mirror) costs well under 1% of a core at any realistic PTY rate. |
+| Frame cost | Reading a full 200x60 frame of fully coloured cells: 8.4 ms with one call per styled cell, 2.9 ms after caching styles per row. Typical frames only read dirty rows. Canvas 2D is enough; no WebGL renderer was needed. |
+| Memory | 5 MB resident for 2,900 rows of 200 columns. Scrollback compression reports "unsupported" on wasm32, so idle compression is a no-op there. |
+| Module size | 1.1 MB (366 KB gzipped) versus 423 KB for ghostty-web's; the webview bundle itself dropped from ~400 KB to ~120 KB. |
+
 ## B: ghostty-web (0.4.0, MIT, by Coder): go
 
 | Question | Finding |

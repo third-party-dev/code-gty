@@ -5,10 +5,13 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { after, before, test } from 'node:test';
-import { Browser, chromium, Frame, Page } from 'playwright-core';
+import { Browser, BrowserType, chromium, firefox, Frame, Page, webkit } from 'playwright-core';
 
 const URL_ = process.env.CODE_SERVER_URL ?? 'http://localhost:8080';
 const WS = process.env.E2E_WORKSPACE ?? '/workspace';
+/** chromium (default), firefox or webkit: gty-term must work in all three. */
+const ENGINE = (process.env.GTY_BROWSER ?? 'chromium') as 'chromium' | 'firefox' | 'webkit';
+const ENGINES: Record<string, BrowserType> = { chromium, firefox, webkit };
 
 let browser: Browser;
 let page: Page;
@@ -16,7 +19,7 @@ let page: Page;
 before(async () => {
   // Webviews need a secure context, so CODE_SERVER_URL must be HTTPS or
   // localhost (docker-compose.yml shares code-server's network for that).
-  browser = await chromium.launch();
+  browser = await ENGINES[ENGINE].launch();
   page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   await openWorkbench();
 });
@@ -121,6 +124,14 @@ test('reload restores the tab with a fresh shell in the same directory', async (
   await page.waitForTimeout(1500);
   await typeInTerminal(`pwd > ${WS}/restored.txt`);
   await waitForFile('restored.txt', `${WS}/sub`);
+});
+
+test('the host engine answers queries from a program in the terminal', async () => {
+  // DA1 from the authoritative engine: the reply is typed back by the PTY
+  // and saved by the shell.
+  rmSync(`${WS}/da.txt`, { force: true });
+  await typeInTerminal(`printf '\\033[c'; read -rs -t 2 -d c r; echo "\${r:1}" > ${WS}/da.txt`);
+  await waitForFile('da.txt', '[?62;22;52');
 });
 
 test('the WASM is served with the right type', async () => {

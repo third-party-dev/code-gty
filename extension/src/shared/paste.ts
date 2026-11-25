@@ -1,10 +1,7 @@
-// Paste preparation, matching xterm.js and the built-in terminal.
+// Paste helpers. Encoding (bracketed paste, unsafe-byte stripping, Kitty
+// paste events) is done by the host engine with ghostty_terminal_paste.
 
-/** Strips embedded bracketed-paste markers (a paste must not end its own bracket) and normalises newlines to CR. */
-export function preparePaste(text: string): string {
-  return text.replace(/\x1b\[20[01]~/g, '').replace(/\r?\n/g, '\r');
-}
-
+/** True if the text has a line break other than one trailing newline. */
 export function isMultiline(text: string): boolean {
   const t = text.replace(/\r?\n$/, '');
   return /[\r\n]/.test(t);

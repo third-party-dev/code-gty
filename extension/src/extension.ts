@@ -34,7 +34,7 @@ export function activate(context: vscode.ExtensionContext): CodeGtyApi {
       s.panel.dispose();
     }),
   );
-  register('codeGty.clear', withActive((s) => s.post({ type: 'clear' })));
+  register('codeGty.clear', withActive((s) => s.clear()));
   register('codeGty.focus', () => {
     const s = manager.activeSession ?? manager.all[0];
     if (s) s.panel.reveal(undefined, false);

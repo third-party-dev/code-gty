@@ -2,14 +2,14 @@
 
 code-gty bundles the following software.
 
-## ghostty-web 0.4.0 (media/webview.js, media/ghostty-vt.wasm)
+## libghostty-vt 1.0.2 (media/ghostty-vt.wasm)
 
-https://github.com/coder/ghostty-web — includes Ghostty's terminal emulator (https://github.com/ghostty-org/ghostty, MIT) compiled to WebAssembly.
+https://ghostty.org — Ghostty's terminal emulation library, built from the release source tarball for wasm32-wasi by `vt-wasm/build.sh`, with the two patches in `vt-wasm/patches` (MIT, like the library).
 
 ```
 MIT License
 
-Copyright (c) 2025 Coder
+Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -29,6 +29,18 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+Linked into the module, per the release's `deps/libghostty-vt-third-party.json`:
+
+| Component | Version | Licence |
+| --- | --- | --- |
+| uucode (Unicode data) | 0.2.0 | MIT AND Unicode-3.0 |
+| wuffs | 0.4.0-alpha.10 | Apache-2.0 OR MIT |
+| simdutf | 9.0.0 | Apache-2.0 OR MIT |
+| highway | 1.2.0 | Apache-2.0 OR BSD-3-Clause |
+| translate_c | 2.0.0 | MIT |
+
+Zig's standard library and compiler-rt (MIT) are also compiled in.
 
 ## Rust crates in bin/gty-sidecar
 

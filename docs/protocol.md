@@ -33,7 +33,7 @@ u32 LE length | u8 kind | u32 LE session | payload
 
 ## Flow control
 
-Each session has a window (`codeGty.flowControlWindow`, default 256 KiB). The reader thread stops reading the PTY while unacknowledged output is at or above the window, so the overshoot is at most one 64 KiB read. The webview acks each chunk once ghostty-web has parsed it. Parsing, not drawing, is the cost the window has to bound, and drawing pauses in hidden tabs.
+Each session has a window (`codeGty.flowControlWindow`, default 256 KiB). The reader thread stops reading the PTY while unacknowledged output is at or above the window, so the overshoot is at most one 64 KiB read. Output first goes through the host's libghostty-vt engine, which forwards the same bytes to the webview. The webview acks each chunk once its mirror engine has parsed it, and the host passes the credit on. Parsing, not drawing, is the cost the window has to bound, and drawing pauses in hidden tabs. When no webview can draw (not ready, or hidden without `retainContextWhenHidden`), the host acks on its behalf and the next webview starts from a snapshot of the host engine. Bytes the host injects itself (notices, Clear) carry no credit.
 
 ## Coalescing
 

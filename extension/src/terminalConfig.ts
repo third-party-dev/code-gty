@@ -40,12 +40,24 @@ export function webviewConfig(): WebviewConfig {
       ? t.get<string>('fontFamily') || editor.get<string>('fontFamily') || BUNDLED_FONT
       : gtyFont?.trim() || BUNDLED_FONT;
   const rightClickDefault = platform === 'windows' ? 'copyPaste' : platform === 'mac' ? 'selectWord' : 'default';
+  const weight = (v: unknown, fallback: string) => (typeof v === 'number' ? String(v) : typeof v === 'string' && /^(normal|bold|[1-9]00)$/.test(v) ? v : fallback);
   return {
     fontFamily,
     fontSize: g.get<number | null>('fontSize') || t.get<number>('fontSize') || editor.get<number>('fontSize') || 14,
+    lineHeight: clamp(t.get<number>('lineHeight', 1), 1, 3),
+    letterSpacing: clamp(t.get<number>('letterSpacing', 0), -5, 20),
+    fontWeight: weight(t.get('fontWeight'), 'normal'),
+    fontWeightBold: weight(t.get('fontWeightBold'), 'bold'),
     cursorStyle: cursor === 'line' ? 'bar' : cursor === 'underline' ? 'underline' : 'block',
     cursorBlink: t.get<boolean>('cursorBlinking', false),
-    scrollback: t.get<number>('scrollback', 1000),
+    cursorWidth: clamp(t.get<number>('cursorWidth', 1), 1, 10),
+    scrollback: clamp(t.get<number>('scrollback', 1000), 0, 1_000_000),
+    drawBoldTextInBrightColors: t.get<boolean>('drawBoldTextInBrightColors', true),
+    minimumContrastRatio: clamp(t.get<number>('minimumContrastRatio', 4.5), 1, 21),
+    customGlyphs: t.get<boolean>('customGlyphs', true),
+    wordSeparators: t.get<string>('wordSeparators', ' ()[]{}\',"`─‘’“”|'),
+    kittyKeyboard: g.get<boolean>('kittyKeyboard', true),
+    images: g.get<boolean>('images', true),
     copyOnSelection: t.get<boolean>('copyOnSelection', false),
     rightClickBehavior: (t.get<string>('rightClickBehavior') ?? rightClickDefault) as WebviewConfig['rightClickBehavior'],
     macOptionIsMeta: t.get<boolean>('macOptionIsMeta', false),
@@ -59,6 +71,10 @@ export function webviewConfig(): WebviewConfig {
     platform,
     accessibility: editor.get<string>('accessibilitySupport') === 'on',
   };
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : lo;
 }
 
 /** Settings that require the webview to rebuild or reconfigure. */

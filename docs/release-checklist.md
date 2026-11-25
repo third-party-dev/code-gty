@@ -21,6 +21,12 @@ Environments: Windows x64, Windows arm64, macOS arm64, macOS x64, Remote SSH (Li
 - [ ] `exit` closes the tab; `exit 3` leaves it open with the exit message.
 - [ ] `echo $TERM_PROGRAM` prints `vscode`, and `code somefile` opens in the **current** window.
 - [ ] With the workspace in Restricted Mode, no terminal can be opened.
+- [ ] `python3 test.py` (repo root) prints YES for every query, Kitty graphics included, and the title, link, clipboard and progress checks behave as described.
+- [ ] `kitty +kitten icat some.png` (or `chafa -f kitty`) shows the image; it scrolls with the text and stays sharp at 125% and 200% zoom.
+- [ ] In Neovim, `Ctrl+I` and `Tab` are told apart (Kitty keyboard protocol); htop and less redraw without flicker; mouse selection in tmux works.
+- [ ] A notification from a background tab (`sleep 3; printf '\e]9;done\a'`, then switch tabs) appears; `printf '\e]9;4;1;50\a'` shows 50% in the status bar and tab title.
+- [ ] With `codeGty.retainContextWhenHidden` off, a hidden tab comes back with exactly the same screen and scrollback.
+- [ ] Drag a tab to a new window: the screen, scrollback and cursor are unchanged.
 - [ ] The **code-gty** output channel shows no errors.
 
 ## Per platform
@@ -29,3 +35,4 @@ Environments: Windows x64, Windows arm64, macOS arm64, macOS x64, Remote SSH (Li
 - [ ] **Windows:** PowerShell is the default and has shell integration (cwd is tracked). Command Prompt and Git Bash profiles start. Ctrl+V pastes, and Ctrl+C copies when there is a selection.
 - [ ] **Remote SSH and WSL:** the extension runs on the remote side (Extensions view: "Install in SSH: ..."), and the shell is the remote's.
 - [ ] **Dev Container (Alpine base image):** the alpine VSIX installs and the shell starts.
+- [ ] **code-server in Firefox and Safari:** typing, IME (Japanese input), selection, find and images work as in Chromium.
