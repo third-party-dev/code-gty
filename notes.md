@@ -1,4 +1,3 @@
 # Things
 
-- Sessions do not survive a reload in this version?
-- ConEmu subcommands
+- While VSCode first, build native (static) version of terminal for all VSCode platforms.

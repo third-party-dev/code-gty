@@ -18,6 +18,7 @@ import { Vt } from '../../vt/core';
 import { mode } from '../../vt/terminal';
 import { restoreSnapshot } from '../../vt/snapshot';
 import type { DecodedImage, DecodeRequest } from '../sidecar';
+import { KittyNotification, KittyNotifications, KittyOutcome } from './kittyNotify';
 import { classifyDcs, classifyImageOsc, itermPlacement, kittyCommands, parseItermArgs } from './imageBridge';
 import { format, selectOutput } from '../../vt/selection';
 import {
@@ -73,6 +74,10 @@ export interface EngineHost {
   tabTitle?(title: string | undefined): void;
   /** ConEmu OSC 9;2: a message box. */
   messageBox?(text: string): void;
+  /** Kitty OSC 99: shows a notification; resolves with what the user did. Undefined if not shown. */
+  showNotification?(n: KittyNotification): Promise<KittyOutcome> | undefined;
+  /** Brings the terminal forward (a notification was activated). */
+  focusTerminal?(): void;
   progress?(state: ProgressState, percent: number): void;
   programStatus?(report: ProgramStatusReport): void;
   semanticPrompt?(ev: SemanticPromptEvent): void;
@@ -247,6 +252,15 @@ export class HostEngine {
    * ConEmu OSC 9 commands that libghostty-vt parses but drops. The terminal
    * still consumes the sequence (as a no-op); this acts on it.
    */
+  /** Kitty OSC 99 state: chunks being assembled, notifications on screen. */
+  private readonly notifications = new KittyNotifications({
+    show: (n) => this.host.showNotification?.(n),
+    reply: (d) => {
+      if (!this.disposed) this.host.writePty(new TextEncoder().encode(d));
+    },
+    focus: () => this.host.focusTerminal?.(),
+  });
+
   private onConEmu(c: ConEmuCommand): void {
     switch (c.kind) {
       case 'tabTitle':
@@ -294,9 +308,11 @@ export class HostEngine {
           const sizing = classifyTextSizing(data);
           const decision = image === 'image' || sizing === 'textSizing' ? 'collect' : classifyOsc(data);
           const conEmu = classifyConEmu(data);
-          if ((decision === 'incomplete' || image === 'incomplete' || sizing === 'incomplete' || conEmu === 'incomplete') && this.pendingBytes < MAX_HELD_OSC) return; // wait for more output
+          const kitty = classifyKittyNotification(data);
+          if ((decision === 'incomplete' || image === 'incomplete' || sizing === 'incomplete' || conEmu === 'incomplete' || kitty === 'incomplete') && this.pendingBytes < MAX_HELD_OSC) return; // wait for more output
           this.atOsc = false;
           if (typeof conEmu === 'object') this.onConEmu(conEmu);
+          if (typeof kitty === 'object') this.notifications.handle(kitty.body, kitty.terminator);
           if (decision === 'collect') {
             this.startCollecting('osc');
             continue;
@@ -696,6 +712,20 @@ export function oscEnd(data: Uint8Array): number {
  * a clipboard read (OSC 52 with `?`, or an OSC 5522 read), anything else, or
  * not decidable until more bytes arrive.
  */
+/**
+ * For the bytes after `ESC ]`: a complete, properly terminated Kitty
+ * notification (OSC 99) with its body after `99;`, 'other', or 'incomplete'.
+ */
+export function classifyKittyNotification(data: Uint8Array): { body: string; terminator: 'st' | 'bel' } | 'other' | 'incomplete' {
+  const head = String.fromCharCode(...data.subarray(0, 3));
+  if (head !== '99;') return '99;'.startsWith(head) ? 'incomplete' : 'other';
+  const end = oscEnd(data);
+  if (!end) return 'incomplete';
+  const last = data[end - 1];
+  if (last !== BEL && !(last === BACKSLASH && data[end - 2] === ESC)) return 'other';
+  return { body: utf8.decode(data.subarray(3, last === BEL ? end - 1 : end - 2)), terminator: last === BEL ? 'bel' : 'st' };
+}
+
 export type ConEmuCommand =
   | { kind: 'tabTitle'; title: string | undefined }
   | { kind: 'messageBox'; text: string }

@@ -17,6 +17,7 @@ import { loadVtSync } from '../vt/loader';
 import type { ProgramStatusReport, ProgressState, SemanticPromptEvent, UnknownSequence } from '../vt/terminal';
 import { Modes } from '../vt/terminal';
 import { EngineOptions, HostEngine } from './engine/hostEngine';
+import type { KittyNotification, KittyOutcome } from './engine/kittyNotify';
 import { parseFileUri } from './fileUri';
 import { openLink } from './links';
 import { ExitMsg, ProcessInfoMsg } from './protocol';
@@ -506,6 +507,8 @@ export class TerminalSession implements SessionListener {
         this.updateTitle();
       },
       messageBox: (text) => this.messageBox(text),
+      showNotification: (n) => this.showKittyNotification(n),
+      focusTerminal: () => this.panel.reveal(undefined, false),
       progress: (state, pct) => this.onProgress(state, pct),
       programStatus: (r) => this.onProgramStatus(r),
       semanticPrompt: (ev) => this.onSemanticPrompt(ev),
@@ -699,6 +702,30 @@ export class TerminalSession implements SessionListener {
     if (!body) return;
     void vscode.window.showInformationMessage(`${this.title}: ${body}`, 'Show Terminal').then((c) => {
       if (c) this.panel.reveal(undefined, false);
+    });
+  }
+
+  /**
+   * Kitty OSC 99. Shown when both the program's occasion and
+   * `codeGty.notifications` allow it. VS Code has no click on the message
+   * itself, so Show Terminal stands for activating it.
+   */
+  private showKittyNotification(n: KittyNotification): Promise<KittyOutcome> | undefined {
+    if (!this.wantsNotification()) return undefined;
+    const focused = this.panel.active && vscode.window.state.focused;
+    if (n.occasion === 'unfocused' && focused) return undefined;
+    if (n.occasion === 'invisible' && this.panel.visible && vscode.window.state.focused) return undefined;
+    const text = [sanitize(n.title), sanitize(n.body, 500)].filter(Boolean).join(': ');
+    if (!text) return undefined;
+    type Item = vscode.MessageItem & { index: number };
+    // Program button numbers are 1-based; 0 is Show Terminal.
+    const items: Item[] = n.buttons.map((b, i) => ({ title: sanitize(b, 40), index: i + 1 })).filter((b) => b.title);
+    items.push({ title: 'Show Terminal', index: 0 });
+    const message = `${this.title}: ${text}`;
+    const shown = n.urgency === 'critical' ? vscode.window.showWarningMessage(message, ...items) : vscode.window.showInformationMessage(message, ...items);
+    return Promise.resolve(shown).then((choice): KittyOutcome => {
+      if (!choice) return { kind: 'closed' };
+      return choice.index === 0 ? { kind: 'activated' } : { kind: 'button', index: choice.index };
     });
   }
 
