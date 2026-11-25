@@ -491,3 +491,36 @@ test('text stays visible next to and below an image across later frames', async 
   assert.ok(ink > 50, `row with text has only ${ink} lit pixels`);
   await page.close();
 });
+
+test('Kitty Unicode placeholder cells (as tmux uses) show the image, not glyphs', async () => {
+  const page = await openTerminal();
+  // A solid red 4x4 image with a virtual placement 2 columns by 1 row (U=1),
+  // then two placeholder cells on row 1 whose foreground colour (palette 42)
+  // names the image and whose diacritics give row 0, columns 0 and 1.
+  const rgb = Buffer.alloc(4 * 4 * 3);
+  for (let i = 0; i < 16; i++) rgb.set([230, 20, 20], i * 3);
+  const ph = (col: string) => `\u{10EEEE}̅${col}`;
+  await output(page, `\x1b_Ga=T,f=24,s=4,v=4,i=42,U=1,c=2,r=1,q=2;${rgb.toString('base64')}\x1b\\\r\n\x1b[38;5;42m${ph('̅')}${ph('̍')}\x1b[39m after`);
+  await page.waitForFunction(() => (window as any).__gty.text().includes('after'));
+  await page.waitForTimeout(200);
+  const r = await page.evaluate(() => {
+    const m = (window as any).__gty.term.cellMetrics as { cellWidth: number; cellHeight: number };
+    const ctx = (document.querySelector('#terminal canvas') as HTMLCanvasElement).getContext('2d')!;
+    const d = ctx.getImageData(0, m.cellHeight, m.cellWidth * 2, m.cellHeight).data;
+    const canvas = ctx.canvas;
+    const bg = Array.from(ctx.getImageData(canvas.width - 2, canvas.height - 2, 1, 1).data.slice(0, 3));
+    // The square image keeps its aspect ratio inside the 2x1 cell box, so
+    // part of the box is background. Anything else would be glyph ink.
+    let red = 0;
+    let other = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      if (Math.abs(d[i] - 230) < 30 && d[i + 1] < 60 && d[i + 2] < 60) red++;
+      else if (Math.abs(d[i] - bg[0]) + Math.abs(d[i + 1] - bg[1]) + Math.abs(d[i + 2] - bg[2]) > 40) other++;
+    }
+    return { red, other, text: (window as any).__gty.text() };
+  });
+  assert.ok(r.red > 0, `no image drawn: ${JSON.stringify(r)}`);
+  assert.equal(r.other, 0, `glyph ink over the image: ${JSON.stringify(r)}`);
+  assert.doesNotMatch(r.text, /\u{10EEEE}/u, 'placeholders are not text');
+  await page.close();
+});

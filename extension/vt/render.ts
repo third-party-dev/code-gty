@@ -362,7 +362,8 @@ export function rowText(row: Row): string {
   let s = '';
   for (const c of row.cells) {
     if (c.wide === Wide.SpacerTail || c.wide === Wide.SpacerHead) continue;
-    s += c.text || ' ';
+    // Kitty image placeholder cells (U+10EEEE) are image, not text.
+    s += c.text && c.text.codePointAt(0) !== 0x10eeee ? c.text : ' ';
   }
   return s.replace(/\s+$/, '');
 }

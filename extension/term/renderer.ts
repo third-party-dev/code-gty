@@ -87,6 +87,9 @@ export interface FrameState {
   images: ImageDraw[];
 }
 
+/** U+10EEEE, the Kitty graphics Unicode placeholder. */
+export const IMAGE_PLACEHOLDER = 0x10eeee;
+
 const css = (c: Rgb) => `#${c.toString(16).padStart(6, '0')}`;
 
 // ---- colour maths -----------------------------------------------------------
@@ -429,6 +432,10 @@ export class Renderer {
     for (let x = 0; x < cols; x++) {
       const c = row.cells[x];
       if (!c || c.wide === Wide.SpacerTail || c.wide === Wide.SpacerHead) continue;
+      // Kitty image placeholders (U+10EEEE plus diacritics that say which
+      // part of the image the cell shows) are drawn as that part of the
+      // image, never as text.
+      if (c.text.codePointAt(0) === IMAGE_PLACEHOLDER) continue;
       const span = c.wide === Wide.Wide ? 2 : 1;
       const { fg, bg } = this.colors(c);
       let color = this.opts.minimumContrastRatio > 1 ? ensureContrast(fg, bg, this.opts.minimumContrastRatio) : fg;
