@@ -12,32 +12,29 @@ export interface KeySpec {
 
 export type Platform = 'mac' | 'windows' | 'linux';
 
+// Like VS Code's own terminal, a key goes to the workbench only when its
+// default binding is a command in VS Code's DEFAULT_COMMANDS_TO_SKIP_SHELL
+// (src/vs/workbench/contrib/terminal/common/terminal.ts). Everything else,
+// Ctrl+B for tmux included, goes to the shell. Debug and task keys (F5, F10,
+// Ctrl+Shift+B...) are left to the shell: their bindings only apply in some
+// contexts, which a webview cannot see, and full-screen programs use them.
 const COMMON_NON_MAC = [
-  'ctrl+p', // Quick Open
-  'ctrl+shift+p', // Command Palette
+  'ctrl+p', // workbench.action.quickOpen
+  'ctrl+shift+p', // workbench.action.showCommands
   'f1',
-  'ctrl+`', // toggle terminal panel
-  'ctrl+shift+`',
-  'ctrl+alt+`', // new Ghostty terminal
-  'ctrl+j', // toggle panel
-  'ctrl+b', // toggle sidebar
-  'ctrl+tab',
+  'ctrl+`', // terminal toggle
+  'ctrl+shift+`', // new terminal
+  'ctrl+alt+`', // new Ghostty terminal (this extension)
+  'ctrl+j', // workbench.action.togglePanel
+  'ctrl+tab', // quickOpen recently used editor
   'ctrl+shift+tab',
-  'ctrl+pageup',
-  'ctrl+pagedown',
-  'ctrl+1', 'ctrl+2', 'ctrl+3', 'ctrl+4', 'ctrl+5', 'ctrl+6', 'ctrl+7', 'ctrl+8', 'ctrl+9',
-  'ctrl+shift+e', // explorer
-  'ctrl+shift+f', // search
-  'ctrl+shift+g', // source control
-  'ctrl+shift+x', // extensions
-  'ctrl+shift+d', // run and debug
-  'ctrl+shift+m', // problems
-  'ctrl+shift+u', // output
-  'ctrl+shift+y', // debug console
-  'ctrl+,', // settings
-  'ctrl+shift+n', // new window
-  'f11',
-  'ctrl+=', 'ctrl+-', 'ctrl+0', // zoom
+  'ctrl+pageup', // workbench.action.previousEditor
+  'ctrl+pagedown', // workbench.action.nextEditor
+  'ctrl+1', 'ctrl+2', 'ctrl+3', 'ctrl+4', 'ctrl+5', 'ctrl+6', 'ctrl+7', 'ctrl+8', // focus*EditorGroup
+  'f6', // workbench.action.focusNextPart
+  'shift+f6', // workbench.action.focusPreviousPart
+  'f11', // workbench.action.toggleFullScreen
+  'ctrl+=', 'ctrl+-', // workbench.action.zoomIn / zoomOut
 ];
 
 const COMMON_MAC = [
@@ -54,6 +51,11 @@ const COMMON_MAC = [
 
 /** Keys that still reach the workbench with sendKeybindingsToShell on. */
 const ALWAYS = { mac: ['cmd+shift+p', 'f1'], windows: ['ctrl+shift+p', 'f1'], linux: ['ctrl+shift+p', 'f1'] };
+
+/** Keys that reach the workbench even while a full-screen program has the keyboard. */
+export function fullScreenPassThrough(platform: Platform): string[] {
+  return ALWAYS[platform];
+}
 
 export function defaultPassThrough(platform: Platform, sendKeybindingsToShell: boolean): string[] {
   if (sendKeybindingsToShell) return ALWAYS[platform];

@@ -29,6 +29,7 @@ let config: WebviewConfig | undefined;
 let theme: Theme | undefined;
 let passThrough = new KeyMatcher([]);
 let shellKeys = new KeyMatcher([]);
+let fullScreenPassThrough = new KeyMatcher([]);
 let chordPending = false;
 let exited = false;
 /** Events the workbench should see; everything else stops at the document. */
@@ -94,6 +95,7 @@ function applyConfig(next: WebviewConfig): void {
   config = next;
   passThrough = new KeyMatcher(next.passThroughKeys);
   shellKeys = new KeyMatcher(next.shellKeys);
+  fullScreenPassThrough = new KeyMatcher(next.fullScreenPassThroughKeys ?? []);
   if (!term || !prev) return;
   const nextTheme = computeTheme();
   if (!sameTheme(theme, nextTheme)) {
@@ -153,6 +155,11 @@ function keyFilter(e: KeyboardEvent): boolean {
     e.stopPropagation();
     return true;
   };
+  // A full-screen program (Neovim, tmux, htop, less...) gets nearly every
+  // key: Ctrl+P, Ctrl+F, Ctrl+K, Ctrl+Tab... mean something to it. Only the
+  // Command Palette, F1, the user's own pass-through keys and the
+  // Ctrl+Shift clipboard keys still reach VS Code.
+  const fullScreen = !!config?.fullScreenPassThroughKeys && !!t.mirror?.altScreen;
 
   if (chordPending) {
     chordPending = false;
@@ -167,13 +174,22 @@ function keyFilter(e: KeyboardEvent): boolean {
     }
     return handled();
   }
-  if (isMac() ? key('cmd+v', e) : key('ctrl+shift+v', e) || key('shift+insert', e) || (isWin() && key('ctrl+v', e))) {
+  if (isMac() ? key('cmd+v', e) : key('ctrl+shift+v', e) || key('shift+insert', e) || (isWin() && !fullScreen && key('ctrl+v', e))) {
     // The host reads the clipboard: a webview's own paste event is not
     // reliable for keyboard shortcuts in every VS Code host.
     post({ type: 'paste' });
     return handled();
   }
-  if (isMac() ? key('cmd+f', e) : key('ctrl+f', e) && !shellKeys.test(e)) {
+  if (shellKeys.test(e)) return false;
+
+  if (fullScreen) {
+    if (fullScreenPassThrough.test(e)) return sendToWorkbench(e);
+    // On macOS, Cmd combinations belong to the app.
+    if (isMac() && e.metaKey) return sendToWorkbench(e);
+    return false;
+  }
+
+  if (isMac() ? key('cmd+f', e) : key('ctrl+f', e)) {
     t.find.open();
     return handled();
   }
@@ -185,11 +201,11 @@ function keyFilter(e: KeyboardEvent): boolean {
     t.selectAll();
     return handled();
   }
-  if (isMac() ? key('cmd+up', e) : key('ctrl+up', e) && !shellKeys.test(e)) {
+  if (isMac() ? key('cmd+up', e) : key('ctrl+up', e)) {
     t.scrollToPrompt(-1);
     return handled();
   }
-  if (isMac() ? key('cmd+down', e) : key('ctrl+down', e) && !shellKeys.test(e)) {
+  if (isMac() ? key('cmd+down', e) : key('ctrl+down', e)) {
     t.scrollToPrompt(1);
     return handled();
   }
@@ -201,8 +217,6 @@ function keyFilter(e: KeyboardEvent): boolean {
     t.scrollLines(t.mirror!.rows - 1);
     return handled();
   }
-
-  if (shellKeys.test(e)) return false;
 
   if (config?.allowChords && !config.sendKeybindingsToShell && (isMac() ? key('cmd+k', e) : key('ctrl+k', e))) {
     chordPending = true;
@@ -314,6 +328,7 @@ async function init(cfg: WebviewConfig): Promise<void> {
   config = cfg;
   passThrough = new KeyMatcher(cfg.passThroughKeys);
   shellKeys = new KeyMatcher(cfg.shellKeys);
+  fullScreenPassThrough = new KeyMatcher(cfg.fullScreenPassThroughKeys ?? []);
   if (term) return;
   try {
     if (!vt) {

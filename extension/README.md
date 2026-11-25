@@ -26,9 +26,11 @@ The terminal speaks the same protocols as Ghostty itself:
 
 ## Keyboard
 
-Most keys go to the shell. A pass-through list sends workbench shortcuts to VS Code instead: Quick Open, the Command Palette, panel and sidebar toggles, and switching tabs. With `terminal.integrated.sendKeybindingsToShell` on, almost every key goes to the shell.
+Keys go to the shell exactly as in VS Code's own terminal: only shortcuts whose default command is in VS Code's `commandsToSkipShell` list go to the workbench (Quick Open `Ctrl+P`, the Command Palette, `F1`, the terminal and panel toggles, `Ctrl+Tab`, `Ctrl+PageUp`/`PageDown`, `Ctrl+1`–`8`, `F6`, `F11`, zoom). Everything else, including `Ctrl+B` for tmux and Emacs-style keys, reaches the program.
 
-VS Code does not let extensions read your keybindings, so if you have custom shortcuts that should work while the terminal has focus, add them to `codeGty.passThroughKeys` (for example `"ctrl+shift+o"`). For keys the shell should always get, such as `ctrl+b` for tmux, use `codeGty.shellKeys`.
+While a full-screen program such as Neovim, tmux, htop or less is running, it gets almost every key, `Ctrl+P`, `Ctrl+F`, `Ctrl+K`, `Ctrl+J`, `Ctrl+Tab` and `Ctrl+W` included. Only the Command Palette, `F1`, your own `codeGty.passThroughKeys` and the `Ctrl+Shift+C`/`Ctrl+Shift+V` clipboard keys still go to VS Code. Turn this off with `codeGty.keysToFullScreenPrograms`. With `terminal.integrated.sendKeybindingsToShell` on, almost every key goes to the shell at the prompt too.
+
+VS Code does not let extensions read your keybindings, so if you have custom shortcuts that should work while the terminal has focus, add them to `codeGty.passThroughKeys` (for example `"ctrl+shift+o"`). For keys the shell should always get, use `codeGty.shellKeys`.
 
 | Action | Linux and Windows | macOS |
 | --- | --- | --- |
@@ -57,6 +59,7 @@ Ctrl+click (Cmd+click on macOS) opens:
 | --- | --- |
 | `codeGty.passThroughKeys` | Extra keys that go to the workbench instead of the shell |
 | `codeGty.shellKeys` | Keys that always go to the shell |
+| `codeGty.keysToFullScreenPrograms` | Full-screen programs (Neovim, tmux, ...) get workbench keys too (default on) |
 | `codeGty.env` | Extra environment variables (`null` removes one) |
 | `codeGty.fontFamily` | Terminal font (default: bundled IosevkaTerm Nerd Font Mono; `null` follows `terminal.integrated.fontFamily`) |
 | `codeGty.fontSize` | Override the terminal font size for this extension only |

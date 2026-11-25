@@ -178,3 +178,26 @@ test('host and mirror stay identical through full-screen output and resizes', ()
   mirror.dispose();
   e.dispose();
 });
+
+test('grapheme clustering (mode 2027) is on by default, as in Ghostty, and survives a reset', () => {
+  const { e } = engine();
+  const width = (s: string) => {
+    e.push(b('\r'));
+    e.push(new TextEncoder().encode(s));
+    return e.term.cursorX;
+  };
+  assert.equal(width('❤️'), 2, 'heart + VS16');
+  assert.equal(width('\u{1F1EC}\u{1F1E7}'), 2, 'flag');
+  assert.equal(width('\u{1F468}‍\u{1F469}‍\u{1F467}'), 2, 'ZWJ family');
+  e.push(b('\x1bc'));
+  assert.equal(width('❤️'), 2, 'after RIS');
+  // The mirror, restored from a snapshot, keeps the same default for a later RIS.
+  e.push(b('\x1b[?2027l'));
+  const mirror = restoreSnapshot(loadVtSync(mod), e.snapshot(), { modeDefaults: { [0x7eb]: true } });
+  assert.equal(width('❤️'), 1, 'a program may turn it off');
+  mirror.write(b('\x1bc'));
+  e.push(b('\x1bc'));
+  assert.equal(width('❤️'), 2);
+  mirror.dispose();
+  e.dispose();
+});

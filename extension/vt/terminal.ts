@@ -174,7 +174,19 @@ export interface TerminalOptions {
   effects?: Effects;
   /** Kitty graphics image storage limit in bytes (0 disables images). */
   kittyImageStorageLimit?: number;
+  /**
+   * Modes on (or off) from the start and after a full reset (RIS), like
+   * Ghostty's own defaults. Key: a packed mode (see `Modes`).
+   */
+  modeDefaults?: Record<number, boolean>;
 }
+
+/**
+ * What the Ghostty app turns on by default: width by grapheme cluster
+ * (mode 2027), so emoji with VS16, flags and ZWJ sequences take 2 cells.
+ * Host and mirror must use the same defaults.
+ */
+export const GHOSTTY_MODE_DEFAULTS: Record<number, boolean> = { [mode(2027)]: true };
 
 export interface WriteStop {
   consumed: number;
@@ -241,7 +253,11 @@ export class Terminal {
   /** Wraps a terminal produced by the snapshot decoder. */
   static adopt(vt: Vt, handle: number, opts: Omit<TerminalOptions, 'cols' | 'rows'>): Terminal {
     const t = new Terminal(vt, handle, opts.effects ?? {});
-    t.configure({ ...opts, cols: 0, rows: 0 });
+    // The snapshot carries the current modes; only the defaults (for a later
+    // RIS) are set here.
+    const { modeDefaults, ...rest } = opts;
+    t.configure({ ...rest, cols: 0, rows: 0 });
+    for (const [m, on] of Object.entries(modeDefaults ?? {})) t.setModeDefault(Number(m), on, false);
     return t;
   }
 
@@ -253,6 +269,7 @@ export class Terminal {
     if (opts.clipboardWriteMaxBytes !== undefined) this.setU32(O.CLIPBOARD_WRITE_MAX_BYTES, opts.clipboardWriteMaxBytes);
     if (opts.titleReport !== undefined) this.setBool(O.TITLE_REPORT, opts.titleReport);
     if (opts.kittyImageStorageLimit !== undefined && this.vt.features.kittyGraphics) this.setU64(O.KITTY_IMAGE_STORAGE_LIMIT, opts.kittyImageStorageLimit);
+    for (const [m, on] of Object.entries(opts.modeDefaults ?? {})) this.setModeDefault(Number(m), on);
     if (opts.colors) this.setColors(opts.colors);
     if (opts.cursorStyle) this.setCursorDefaults(opts.cursorStyle, opts.cursorBlink ?? false);
     this.setReplyStrings(opts.xtversion ?? '', opts.answerback ?? '');
@@ -825,6 +842,18 @@ export class Terminal {
       if (r !== OK) return false;
       return this.vt.u8[p + s.f.value] !== 0;
     });
+  }
+
+  /** Sets a mode's default (what RIS restores) and, for a new terminal, its value. */
+  setModeDefault(m: number, value: boolean, applyNow = true): void {
+    this.vt.withScratch((take) => {
+      const s = S.GhosttyTerminalModeConfig;
+      const p = take(s.size);
+      this.vt.dv.setUint16(p + s.f.mode, m, true);
+      this.vt.u8[p + s.f.value] = value ? 1 : 0;
+      this.set(O.MODE_DEFAULT, p, 'set mode default');
+    });
+    if (applyNow) this.setMode(m, value);
   }
 
   setMode(m: number, value: boolean): void {

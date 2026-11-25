@@ -96,8 +96,7 @@ before(async () => {
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  const path = process.env.BROWSER_PATH || (ENGINE === 'chromium' ? process.env.CHROMIUM_PATH : undefined) || undefined;
-  browser = await ENGINES[ENGINE].launch({ executablePath: path });
+  await launchBrowser();
 });
 
 after(async () => {
@@ -107,7 +106,30 @@ after(async () => {
 
 type Sent = { type: string; [k: string]: unknown };
 
+async function launchBrowser(): Promise<void> {
+  const path = process.env.BROWSER_PATH || (ENGINE === 'chromium' ? process.env.CHROMIUM_PATH : undefined) || undefined;
+  browser = await ENGINES[ENGINE].launch({ executablePath: path });
+}
+
+/**
+ * Opens a terminal page. Under heavy load (parallel Docker stages) WebKit's
+ * browser process has been seen to die while a page loads; that is the
+ * browser, not the page under test, so relaunch it and try once more.
+ */
 async function openTerminal(overrides: Partial<WebviewConfig> = {}, deviceScaleFactor = 1, autoAttach = true): Promise<Page> {
+  try {
+    if (!browser.isConnected()) await launchBrowser();
+    return await openTerminalOnce(overrides, deviceScaleFactor, autoAttach);
+  } catch (e) {
+    if (browser.isConnected() && !/has been closed/.test(String(e))) throw e;
+    console.error(`browser died (${String(e).split('\n')[0]}); relaunching once`);
+    await browser.close().catch(() => undefined);
+    await launchBrowser();
+    return openTerminalOnce(overrides, deviceScaleFactor, autoAttach);
+  }
+}
+
+async function openTerminalOnce(overrides: Partial<WebviewConfig>, deviceScaleFactor: number, autoAttach: boolean): Promise<Page> {
   const page = await browser.newPage({ viewport: { width: 800, height: 400 }, deviceScaleFactor });
   page.on('pageerror', (e) => console.error('pageerror', e));
   page.on('console', (m) => m.type() === 'error' && console.error('console', m.text()));
@@ -260,6 +282,49 @@ test('IME composition shows pre-edit text and commits it as one input', async ()
   });
   await page.waitForFunction(() => (window as any).__sent.some((m: Sent) => m.type === 'input'));
   assert.deepEqual(await inputs(page), ['日本']);
+  await page.close();
+});
+
+test('tmux and Emacs keys go to the program, as in VS Code’s own terminal', async () => {
+  // The real default list, not the short one the other tests use.
+  const { defaultPassThrough } = await import('../../src/shared/keys');
+  const page = await openTerminal({ passThroughKeys: defaultPassThrough('linux', false) });
+  await page.locator('#terminal').click();
+  await clearSent(page);
+  for (const k of ['Control+b', 'Control+e', 'Control+w', 'Control+n', 'Control+Shift+E', 'F5']) await page.keyboard.press(k);
+  await page.waitForFunction(() => (window as any).__sent.filter((m: Sent) => m.type === 'input').length >= 6);
+  // Ctrl+Shift+E is encoded so programs can tell it from Ctrl+E, as Ghostty does.
+  assert.deepEqual(await inputs(page), ['\x02', '\x05', '\x17', '\x0e', '\x1b[101;6u', '\x1b[15~']);
+  assert.deepEqual(await page.evaluate(() => (window as any).__windowKeys), [], 'none of these may reach the workbench');
+  await page.close();
+});
+
+test('a full-screen program such as Neovim gets workbench keys too', async () => {
+  const { defaultPassThrough, fullScreenPassThrough } = await import('../../src/shared/keys');
+  const page = await openTerminal({ passThroughKeys: defaultPassThrough('linux', false), fullScreenPassThroughKeys: fullScreenPassThrough('linux') });
+  await page.locator('#terminal').click();
+  // At the shell prompt Ctrl+P is Quick Open, as in VS Code's terminal.
+  await clearSent(page);
+  await page.keyboard.press('Control+p');
+  await page.waitForTimeout(50);
+  assert.deepEqual(await inputs(page), []);
+  assert.deepEqual(await page.evaluate(() => (window as any).__windowKeys), ['p']);
+  // In the alternate screen, Neovim's keys reach Neovim.
+  await output(page, '\x1b[?1049h');
+  await page.waitForTimeout(50);
+  await clearSent(page);
+  await page.evaluate(() => ((window as any).__windowKeys = []));
+  for (const k of ['Control+p', 'Control+f', 'Control+k', 'Control+j', 'Control+Tab', 'Control+PageDown', 'Control+1', 'Control+ArrowUp']) await page.keyboard.press(k);
+  await page.waitForFunction(() => (window as any).__sent.filter((m: Sent) => m.type === 'input').length >= 8);
+  assert.equal((await inputs(page)).length, 8, JSON.stringify(await inputs(page)));
+  assert.deepEqual((await inputs(page)).slice(0, 4), ['\x10', '\x06', '\x0b', '\n']);
+  assert.equal(await page.locator('#find').isHidden(), true, 'Ctrl+F must not open find');
+  assert.deepEqual(await page.evaluate(() => (window as any).__windowKeys), []);
+  // The Command Palette and F1 still reach VS Code.
+  await page.keyboard.press('Control+Shift+P');
+  await page.keyboard.press('F1');
+  await page.waitForTimeout(50);
+  assert.deepEqual(await page.evaluate(() => (window as any).__windowKeys), ['P', 'F1']);
   await page.close();
 });
 

@@ -82,6 +82,11 @@
           "default": [],
           "markdownDescription": "Extra keys that skip the shell and go to the workbench, written like `ctrl+shift+o` or `cmd+k`. VS Code has no API to read your own keybindings, so add custom ones here."
         },
+        "codeGty.keysToFullScreenPrograms": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "While a full-screen program (Neovim, tmux, htop, less, ...) is running, send it every key except the Command Palette, `F1`, the Ctrl+Shift clipboard keys and `#codeGty.passThroughKeys#`. At the shell prompt, keys go to VS Code as in its own terminal."
+        },
         "codeGty.shellKeys": {
           "type": "array",
           "items": { "type": "string" },

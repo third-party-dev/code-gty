@@ -13,7 +13,7 @@ import { KittyImages } from '../vt/kitty';
 import { CellFlag, RenderState, Row, rowText } from '../vt/render';
 import { format, gridRef, hyperlinkAt, selectAll, SelectionGesture, getSelection, setSelection, selectWord } from '../vt/selection';
 import { SnapshotRestore } from '../vt/snapshot';
-import { Modes, Terminal } from '../vt/terminal';
+import { GHOSTTY_MODE_DEFAULTS, Modes, Terminal } from '../vt/terminal';
 import { findFileLinks, FoundLink } from './fileLinks';
 import { FindController } from './find';
 import { loadLayoutMap, modsOf, toKeyInput } from './keyboard';
@@ -168,6 +168,7 @@ export class GtyTerminal {
       scrollbackBytes: Math.max(1, this.opts.scrollback) * BYTES_PER_LINE,
       kittyImageStorageLimit: this.opts.images ? 320 * 1024 * 1024 : 0,
       continuationMaxBytes: 0,
+      modeDefaults: GHOSTTY_MODE_DEFAULTS,
       colors: { foreground: hexToRgb(t.foreground), background: hexToRgb(t.background), cursor: hexToRgb(t.cursor), palette: themePalette(t) },
       cursorStyle: this.opts.cursorStyle,
       cursorBlink: this.opts.cursorBlink,

@@ -26,6 +26,7 @@ import {
   Terminal,
   TerminalColors,
   UnknownSequence,
+  GHOSTTY_MODE_DEFAULTS,
 } from '../../vt/terminal';
 
 const OSC_START = 1 << 5;
@@ -116,6 +117,7 @@ export class HostEngine {
       unknownMaxBytes: 64 * 1024,
       clipboardWriteMaxBytes: 8 * 1024 * 1024,
       kittyImageStorageLimit: opts.images === false ? 0 : IMAGE_STORAGE_BYTES,
+      modeDefaults: GHOSTTY_MODE_DEFAULTS,
       colors: opts.colors,
       cursorStyle: opts.cursorStyle,
       cursorBlink: opts.cursorBlink,

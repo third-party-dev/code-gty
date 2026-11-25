@@ -25,6 +25,11 @@ export interface WebviewConfig {
   images: boolean;
   /** Pass-through keys, already merged from defaults and settings. */
   passThroughKeys: string[];
+  /**
+   * Pass-through keys while a full-screen program (alternate screen: Neovim,
+   * tmux, htop...) runs, or undefined to use `passThroughKeys` then too.
+   */
+  fullScreenPassThroughKeys?: string[];
   shellKeys: string[];
   sendKeybindingsToShell: boolean;
   allowChords: boolean;

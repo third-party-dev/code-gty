@@ -32,6 +32,23 @@ test('pass-through matcher', () => {
   assert.ok(m.test(ev('Backquote', { ctrlKey: true })));
   assert.ok(!m.test(ev('KeyC', { ctrlKey: true })), 'Ctrl+C must reach the shell');
   assert.ok(!m.test(ev('KeyR', { ctrlKey: true })), 'Ctrl+R must reach the shell');
+  // Keys VS Code's own terminal gives the shell (not in its commandsToSkipShell).
+  for (const [code, mods, why] of [
+    ['KeyB', { ctrlKey: true }, 'tmux prefix'],
+    ['KeyE', { ctrlKey: true }, 'end of line'],
+    ['KeyW', { ctrlKey: true }, 'delete word'],
+    ['KeyN', { ctrlKey: true }, 'next history'],
+    ['Digit0', { ctrlKey: true }, 'focusSideBar is not skipped'],
+    ['Comma', { ctrlKey: true }, 'settings is not skipped'],
+    ['KeyE', { ctrlKey: true, shiftKey: true }, 'explorer is not skipped'],
+    ['F5', {}, 'debug start is contextual'],
+    ['F10', {}, 'htop and mc use F10'],
+  ] as const) {
+    assert.ok(!m.test(ev(code, mods)), `${code} ${JSON.stringify(mods)} must reach the shell (${why})`);
+  }
+  assert.ok(m.test(ev('Tab', { ctrlKey: true })));
+  assert.ok(m.test(ev('PageDown', { ctrlKey: true })));
+  assert.ok(m.test(ev('F6')));
   const send = new KeyMatcher(defaultPassThrough('linux', true));
   assert.ok(!send.test(ev('KeyP', { ctrlKey: true })));
   assert.ok(send.test(ev('F1')));

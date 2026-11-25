@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { buildEnvironment, EnvMap, EnvPatch } from './env';
 import { osKey, ProfileConfig, resolveShell, ShellLaunch } from './profiles';
-import { defaultPassThrough, Platform } from './shared/keys';
+import { defaultPassThrough, fullScreenPassThrough, Platform } from './shared/keys';
 import { WebviewConfig } from './shared/messages';
 import { injectShellIntegration } from './shellIntegration';
 
@@ -63,6 +63,9 @@ export function webviewConfig(): WebviewConfig {
     macOptionIsMeta: t.get<boolean>('macOptionIsMeta', false),
     enableBell: t.get<boolean>('enableBell', false) || t.get<boolean>('enableVisualBell', false),
     passThroughKeys: [...defaultPassThrough(platform, sendKeys), ...g.get<string[]>('passThroughKeys', [])],
+    fullScreenPassThroughKeys: g.get<boolean>('keysToFullScreenPrograms', true)
+      ? [...fullScreenPassThrough(platform), ...g.get<string[]>('passThroughKeys', [])]
+      : undefined,
     shellKeys: g.get<string[]>('shellKeys', []),
     sendKeybindingsToShell: sendKeys,
     allowChords: t.get<boolean>('allowChords', true),
