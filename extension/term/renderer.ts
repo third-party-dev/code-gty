@@ -296,7 +296,10 @@ export class Renderer {
     const m = this.metrics;
     full = full || this.needFull || cols !== this.cols || rowCount !== this.rowCount || state.images.length > 0 || this.hadImages;
     this.hadImages = state.images.length > 0;
-    if (full) this.rows = [];
+    // `fresh` only holds the rows that changed. A full redraw for reasons of
+    // our own (images on screen, new colours, zoom) still needs every row, so
+    // the cache is kept and only dropped when the grid itself changes size.
+    if (cols !== this.cols || rowCount !== this.rowCount) this.rows = [];
     for (const r of fresh) this.rows[r.y] = r;
     this.rows.length = rowCount;
     this.cols = cols;

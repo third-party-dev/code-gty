@@ -468,3 +468,26 @@ test('Kitty graphics images are drawn at their cells', async () => {
   assert.notDeepEqual(px.outside, [230, 20, 20]);
   await page.close();
 });
+
+test('text stays visible next to and below an image across later frames', async () => {
+  const page = await openTerminal();
+  const rgb = Buffer.alloc(4 * 4 * 3, 200);
+  await output(page, `\x1b_Ga=T,f=24,s=4,v=4,i=11,c=2,r=1;${rgb.toString('base64')}\x1b\\\r\nAFTER IMAGE TEXT\r\n`);
+  await page.waitForFunction(() => (window as any).__gty.text().includes('AFTER IMAGE TEXT'));
+  // Later frames (cursor blink, more output elsewhere) must keep drawing it.
+  await output(page, '\r\nmore');
+  await page.waitForTimeout(1500);
+  const ink = await page.evaluate(() => {
+    const m = (window as any).__gty.term.cellMetrics as { cellWidth: number; cellHeight: number };
+    const canvas = document.querySelector('#terminal canvas') as HTMLCanvasElement;
+    const ctx = canvas.getContext('2d')!;
+    // Row 1 holds "AFTER IMAGE TEXT": count pixels that differ from the background.
+    const d = ctx.getImageData(0, m.cellHeight, m.cellWidth * 16, m.cellHeight).data;
+    const bg = Array.from(ctx.getImageData(canvas.width - 2, canvas.height - 2, 1, 1).data.slice(0, 3));
+    let n = 0;
+    for (let i = 0; i < d.length; i += 4) if (Math.abs(d[i] - bg[0]) + Math.abs(d[i + 1] - bg[1]) + Math.abs(d[i + 2] - bg[2]) > 60) n++;
+    return n;
+  });
+  assert.ok(ink > 50, `row with text has only ${ink} lit pixels`);
+  await page.close();
+});
