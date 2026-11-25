@@ -60,7 +60,7 @@ impl Session {
     pub fn spawn(id: u32, req: SpawnRequest, out: Sender<Out>) -> Result<Session, String> {
         let pty = native_pty_system();
         let pair = pty
-            .openpty(size(req.cols, req.rows))
+            .openpty(size(req.cols, req.rows, req.width, req.height))
             .map_err(|e| format!("openpty failed: {e}"))?;
 
         let mut cmd = CommandBuilder::new(&req.command);
@@ -195,8 +195,8 @@ impl Session {
         let _ = self.input.send(data);
     }
 
-    pub fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
-        self.master.resize(size(cols, rows)).map_err(|e| e.to_string())
+    pub fn resize(&self, cols: u16, rows: u16, width: u16, height: u16) -> Result<(), String> {
+        self.master.resize(size(cols, rows, width, height)).map_err(|e| e.to_string())
     }
 
     pub fn ack(&self, bytes: usize) {
@@ -299,6 +299,6 @@ impl Session {
     }
 }
 
-fn size(cols: u16, rows: u16) -> PtySize {
-    PtySize { cols: cols.max(1), rows: rows.max(1), pixel_width: 0, pixel_height: 0 }
+fn size(cols: u16, rows: u16, width: u16, height: u16) -> PtySize {
+    PtySize { cols: cols.max(1), rows: rows.max(1), pixel_width: width, pixel_height: height }
 }

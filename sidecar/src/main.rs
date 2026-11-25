@@ -117,6 +117,8 @@ fn selftest() -> i32 {
         cwd: None,
         cols: 91,
         rows: 33,
+        width: 0,
+        height: 0,
         window: None,
         replay_limit: None,
     };
@@ -181,7 +183,7 @@ fn handle(frame: Frame, sessions: &Sessions, tx: &Sender<Out>) {
         kind::INPUT => with_session(sessions, id, &err, |s| s.input(frame.payload)),
         kind::RESIZE => match serde_json::from_slice::<ResizeRequest>(&frame.payload) {
             Ok(r) => with_session(sessions, id, &err, |s| {
-                if let Err(e) = s.resize(r.cols, r.rows) {
+                if let Err(e) = s.resize(r.cols, r.rows, r.width, r.height) {
                     err(format!("resize failed: {e}"));
                 }
             }),

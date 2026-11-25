@@ -36,6 +36,9 @@ export interface SpawnRequest {
   cwd?: string;
   cols: number;
   rows: number;
+  /** Pixel size of the text area, for TIOCGWINSZ (image viewers). */
+  width?: number;
+  height?: number;
   window?: number;
   replayLimit?: number;
 }

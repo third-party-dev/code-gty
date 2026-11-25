@@ -120,6 +120,12 @@ pub struct SpawnRequest {
     pub cwd: Option<String>,
     pub cols: u16,
     pub rows: u16,
+    /// Size of the text area in pixels, for programs that read it from the
+    /// PTY (TIOCGWINSZ), such as image viewers. 0 when unknown.
+    #[serde(default)]
+    pub width: u16,
+    #[serde(default)]
+    pub height: u16,
     /// Flow-control window in bytes of unacknowledged output.
     #[serde(default)]
     pub window: Option<usize>,
@@ -132,6 +138,11 @@ pub struct SpawnRequest {
 pub struct ResizeRequest {
     pub cols: u16,
     pub rows: u16,
+    /// Pixel size of the text area; 0 when unknown.
+    #[serde(default)]
+    pub width: u16,
+    #[serde(default)]
+    pub height: u16,
 }
 
 #[derive(Debug, serde::Serialize)]

@@ -15,10 +15,10 @@ u32 LE length | u8 kind | u32 LE session | payload
 | Kind | Name | Direction | Payload |
 | --- | --- | --- | --- |
 | 1 | `hello` | sidecar to host | JSON `{protocol, build, pid, os}`, always the first frame |
-| 2 | `spawn` | host to sidecar | JSON `{command, args, env, cwd?, cols, rows, window?, replayLimit?}` |
+| 2 | `spawn` | host to sidecar | JSON `{command, args, env, cwd?, cols, rows, width?, height?, window?, replayLimit?}` |
 | 12 | `spawned` | sidecar to host | JSON `{pid}` |
 | 3 | `input` | host to sidecar | raw bytes for the PTY |
-| 4 | `resize` | host to sidecar | JSON `{cols, rows}` |
+| 4 | `resize` | host to sidecar | JSON `{cols, rows, width?, height?}` (`width` and `height`: the text area in pixels, reported through `TIOCGWINSZ`; 0 when unknown) |
 | 5 | `output` | sidecar to host | raw PTY bytes |
 | 6 | `ack` | host to sidecar | `u32 LE` count of output bytes drawn |
 | 9 | `attach` | host to sidecar | empty; asks for a replay |

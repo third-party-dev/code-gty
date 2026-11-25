@@ -290,21 +290,30 @@ export class TerminalSession implements SessionListener {
   }
 
   private metrics = { cellWidth: 9, cellHeight: 18 };
+
+  /** The text area in pixels, as programs read it from the PTY (TIOCGWINSZ). */
+  private pixels(cols = this.cols, rows = this.rows): { width: number; height: number } {
+    const px = (n: number) => Math.min(0xffff, Math.max(0, Math.round(n)));
+    return { width: px(cols * this.metrics.cellWidth), height: px(rows * this.metrics.cellHeight) };
+  }
   private theme: EngineOptions['colors'] | undefined;
 
   private async onResize(cols: number, rows: number): Promise<void> {
     if (this.spawned && this.engine) {
       if (cols === this.cols && rows === this.rows) {
-        // Only the cell size changed: the PTY keeps its size, the engine
-        // learns the new pixels (size reports, image placement).
+        // Only the cell size changed: same grid, new pixels for the engine
+        // (size reports, image placement) and the PTY (TIOCGWINSZ).
         this.engine.resize(cols, rows, this.metrics);
+        const p = this.pixels();
+        this.sidecarClient?.resize(this.sessionId, cols, rows, p.width, p.height);
         return;
       }
       this.cols = cols;
       this.rows = rows;
       // Same point in the stream for the host engine, the PTY and the mirror.
       this.engine.resize(cols, rows, this.metrics);
-      this.sidecarClient?.resize(this.sessionId, cols, rows);
+      const p = this.pixels();
+      this.sidecarClient?.resize(this.sessionId, cols, rows, p.width, p.height);
       this.post({ type: 'resized', cols, rows });
       return;
     }
@@ -412,6 +421,7 @@ export class TerminalSession implements SessionListener {
         cwd: plan.cwd,
         cols,
         rows,
+        ...this.pixels(cols, rows),
         window: cfg.get<number>('flowControlWindow', 262144),
         replayLimit: cfg.get<number>('replayBufferSize', 2 * 1024 * 1024),
       },

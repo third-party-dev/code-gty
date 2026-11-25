@@ -108,8 +108,9 @@ export class SidecarClient {
     }
   }
 
-  resize(id: number, cols: number, rows: number): void {
-    this.send(encodeJson(Kind.RESIZE, id, { cols, rows }));
+  /** `width` and `height` are the text area in pixels (0 when unknown), for TIOCGWINSZ. */
+  resize(id: number, cols: number, rows: number, width = 0, height = 0): void {
+    this.send(encodeJson(Kind.RESIZE, id, { cols, rows, width, height }));
   }
 
   ack(id: number, bytes: number): void {

@@ -135,6 +135,18 @@ test('resize changes the PTY size', async () => {
   assert.match(rec.out, /20 50/);
 });
 
+test('the PTY reports the text area in pixels (TIOCGWINSZ), as image viewers need', { skip: existsSync('/usr/bin/python3') ? false : 'needs python3' }, async () => {
+  const c = await client();
+  const winsz = "import fcntl,termios,struct; print('px', *struct.unpack('HHHH', fcntl.ioctl(0, termios.TIOCGWINSZ, bytes(8))))";
+  const { id, rec } = run(c, '/bin/sh', ['-c', `python3 -c "${winsz}"; read x; python3 -c "${winsz}"`], { cols: 100, rows: 30, width: 900, height: 540 });
+  await until(() => rec.out.includes('px 30 100 900 540'), 5000, 'initial pixel size');
+  c.resize(id, 50, 20, 450, 360);
+  await new Promise((r) => setTimeout(r, 50));
+  c.input(id, '\r');
+  await until(() => !!rec.exit);
+  assert.match(rec.out, /px 20 50 450 360/);
+});
+
 test('flow control pauses output until acked', async () => {
   const c = await client();
   const window = 8192;
