@@ -24,6 +24,8 @@ The terminal speaks the same protocols as Ghostty itself:
 - **Notifications** (OSC 9, OSC 777) as VS Code notifications when the tab is not focused (`codeGty.notifications`), **progress** (OSC 9;4) in the status bar and tab title (`codeGty.progress`), and **program status** (OSC 7501, used by build tools and coding agents) in the status bar.
 - **The clipboard** through OSC 52 and the Kitty clipboard protocol, as `codeGty.osc52` allows.
 
+Not supported: DEC double-width and double-height lines (`ESC # 3/4/6`), which show at normal size, and Kitty text sizing (OSC 66), whose text is shown at normal size.
+
 ## Keyboard
 
 Keys go to the shell exactly as in VS Code's own terminal: only shortcuts whose default command is in VS Code's `commandsToSkipShell` list go to the workbench (Quick Open `Ctrl+P`, the Command Palette, `F1`, the terminal and panel toggles, `Ctrl+Tab`, `Ctrl+PageUp`/`PageDown`, `Ctrl+1`–`8`, `F6`, `F11`, zoom). Everything else, including `Ctrl+B` for tmux and Emacs-style keys, reaches the program.

@@ -258,13 +258,15 @@ export class HostEngine {
         if (this.atOsc) {
           // The next bytes are the body of an OSC whose introducer was just
           // processed. A clipboard read needs the clipboard before the
-          // terminal sees the rest of it; an iTerm2 image is collected.
+          // terminal sees the rest of it; an iTerm2 image or a Kitty text
+          // sizing command (OSC 66) is collected.
           const data = this.joined();
           const image = this.imageBridgeOn ? classifyImageOsc(data) : 'other';
-          const decision = image === 'image' ? 'image' : classifyOsc(data);
-          if ((decision === 'incomplete' || image === 'incomplete') && this.pendingBytes < MAX_HELD_OSC) return; // wait for more output
+          const sizing = classifyTextSizing(data);
+          const decision = image === 'image' || sizing === 'textSizing' ? 'collect' : classifyOsc(data);
+          if ((decision === 'incomplete' || image === 'incomplete' || sizing === 'incomplete') && this.pendingBytes < MAX_HELD_OSC) return; // wait for more output
           this.atOsc = false;
-          if (decision === 'image') {
+          if (decision === 'collect') {
             this.startCollecting('osc');
             continue;
           }
@@ -380,8 +382,31 @@ export class HostEngine {
       off += ch.length;
     }
     if (c.kind === 'dcs') this.decode({ kind: 'sixel', data: all, background: this.term.background ?? 0 }, 'sixel');
-    else this.itermCommand(new TextDecoder().decode(all));
+    else {
+      const text = new TextDecoder().decode(all);
+      if (text.startsWith('66;')) this.textSizingFallback(text);
+      else this.itermCommand(text);
+    }
     return true;
+  }
+
+  /**
+   * Kitty text sizing (OSC 66 ; metadata ; text): libghostty-vt has no
+   * scaled text and drops the whole sequence, text included. Print the text
+   * at normal size instead, as the protocol expects of terminals without it.
+   */
+  private textSizingFallback(osc: string): void {
+    const semi = osc.indexOf(';', 3);
+    if (semi < 0) return;
+    const text = osc
+      .slice(semi + 1)
+      .replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
+      .slice(0, 4096);
+    if (!text) return;
+    const bytes = new TextEncoder().encode(text);
+    // At ground: the OSC was cancelled with CAN and nothing has come after it yet.
+    this.term.write(bytes);
+    this.host.forward(bytes, false);
   }
 
   private itermCommand(text: string): void {
@@ -635,6 +660,13 @@ export function oscEnd(data: Uint8Array): number {
  * a clipboard read (OSC 52 with `?`, or an OSC 5522 read), anything else, or
  * not decidable until more bytes arrive.
  */
+/** For the bytes after `ESC ]`: Kitty text sizing (OSC 66), something else, or too short to tell. */
+export function classifyTextSizing(data: Uint8Array): 'textSizing' | 'other' | 'incomplete' {
+  const head = String.fromCharCode(...data.subarray(0, 3));
+  if (head === '66;') return 'textSizing';
+  return '66;'.startsWith(head) ? 'incomplete' : 'other';
+}
+
 export function classifyOsc(data: Uint8Array): 'clipboardRead' | 'other' | 'incomplete' {
   const end = oscEnd(data);
   const body = end ? data.subarray(0, end) : data;

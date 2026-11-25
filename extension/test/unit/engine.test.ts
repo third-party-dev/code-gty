@@ -201,3 +201,19 @@ test('grapheme clustering (mode 2027) is on by default, as in Ghostty, and survi
   mirror.dispose();
   e.dispose();
 });
+
+test('Kitty text sizing (OSC 66) falls back to printing its text at normal size', () => {
+  const { e, forwarded } = engine();
+  e.push(b('a\x1b]6'));
+  e.push(b('6;s=2;Big '));
+  e.push(b('text\x1b\\|'));
+  // Control characters in the text are dropped, not executed.
+  e.push(b('\x1b]66;w=1;A\x08B\x07|end'));
+  assert.equal(format(e.term), 'aBig text|AB|end');
+  // The mirror sees the same thing: the cancelled introducer, then the text.
+  const mirror = restoreSnapshot(loadVtSync(mod), new HostEngine(loadVtSync(mod), OPTS, { writePty: () => undefined, forward: () => undefined }).snapshot(), {});
+  for (const f of forwarded) mirror.write(b(f));
+  assert.equal(format(mirror), format(e.term));
+  mirror.dispose();
+  e.dispose();
+});
