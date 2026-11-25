@@ -1162,3 +1162,4 @@ if __name__ == "__main__":
     PASS         kitty_keyboard_query   supported, active flags = 0
 
   48 pass, 8 fail
+'''
