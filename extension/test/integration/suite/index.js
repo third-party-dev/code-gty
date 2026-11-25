@@ -124,7 +124,7 @@ test('settings env is applied with variable resolution', async () => {
 
 test('commands are registered', async () => {
   const all = await vscode.commands.getCommands(true);
-  for (const c of ['codeGty.new', 'codeGty.newToSide', 'codeGty.kill', 'codeGty.clear', 'codeGty.find', 'codeGty.sendText', 'codeGty.scrollToPreviousCommand', 'codeGty.showRecentOutput']) {
+  for (const c of ['codeGty.new', 'codeGty.newToSide', 'codeGty.kill', 'codeGty.clear', 'codeGty.find', 'codeGty.sendText', 'codeGty.scrollToPreviousCommand', 'codeGty.showRecentOutput', 'codeGty.manageSessions']) {
     assert.ok(all.includes(c), c);
   }
 });

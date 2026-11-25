@@ -47,6 +47,12 @@ VS Code does not let extensions read your keybindings, so if you have custom sho
 
 For bash, zsh, fish and PowerShell, code-gty loads a small script through the shell's normal startup files. The script reports prompts, commands, exit codes and the current directory. That information powers "scroll to previous/next command", new terminals in the same directory, file links relative to the right directory, and restoring tabs after a reload. Turn it off with `terminal.integrated.shellIntegration.enabled`.
 
+## Sessions
+
+Terminals keep running when the window reloads or closes, like tmux sessions. When the workspace opens again, each tab reattaches to its shell with the screen and scrollback as they are now, including output written while no window was open. The shells live in a small per-user background process (the sidecar daemon), which exits a minute after the last session ends.
+
+**Ghostty: Manage Sessions…** lists every session, in this window and others: open one in this window (if another window shows it, it moves here and the other tab says so), or kill it with the trash button. Closing a tab still ends its shell, as in the built-in terminal. Turn persistence off with `codeGty.persistentSessions`; then a reload restarts the shell in the same directory.
+
 ## Links
 
 Ctrl+click (Cmd+click on macOS) opens:
@@ -70,6 +76,7 @@ Ctrl+click (Cmd+click on macOS) opens:
 | `codeGty.notifications` | Program notifications: `off`, `unfocused` (default) or `always` |
 | `codeGty.progress` | Show program progress in the status bar and tab title (default on) |
 | `codeGty.kittyKeyboard` | Allow the Kitty keyboard protocol (default on) |
+| `codeGty.persistentSessions` | Keep sessions running across reloads and closed windows (default: follows `terminal.integrated.enablePersistentSessions`) |
 | `codeGty.images` | Show Kitty graphics images (default on) |
 | `codeGty.answerback` | Reply to ENQ (default empty) |
 | `codeGty.term` | Value of `TERM` (default `xterm-256color`) |
@@ -99,7 +106,8 @@ This terminal is a webview, not a VS Code terminal, so:
 - other extensions' terminal link providers, quick fixes and environment contributions (for example the git extension's askpass helper) do not apply. Extensions can use this extension's own API instead (below);
 - **Terminal: Run Selected Text** targets the built-in terminal. Use **Ghostty: Run Selected Text in Active Ghostty Terminal** (`Ctrl+Alt+Enter`) instead;
 - in a browser (code-server, Coder), keys the browser keeps for itself, such as `Ctrl+W`, cannot be captured;
-- a window reload restarts the shell, in the same directory, with a divider line. (Moving a tab, or a hidden tab coming back, keeps everything: the screen is restored exactly from the terminal engine in the extension host.) Sessions that survive a reload are planned. In browser-hosted editors the directory is saved lazily, so a `cd` made in the last few seconds before a reload can be lost;
+- a session is shown in one window at a time. Opening it in another window (with **Ghostty: Manage Sessions…**) moves it there, and the old tab says so;
+- in browser-hosted editors, tab state is saved lazily, so a tab opened in the last few seconds before a reload may come back as a new shell rather than reattaching;
 - browser-hosted editors must be served over HTTPS or from `localhost`. Over plain HTTP from another host, VS Code disables all webviews, including this terminal;
 - screen-reader support is basic: a live region of the visible screen when `editor.accessibilitySupport` is `on`, and **Ghostty: Show Recent Output (Accessible)**.
 

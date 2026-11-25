@@ -52,7 +52,8 @@
       { "command": "codeGty.runSelectedText", "title": "Run Selected Text in Active Ghostty Terminal", "category": "Ghostty" },
       { "command": "codeGty.showRecentOutput", "title": "Show Recent Output (Accessible)", "category": "Ghostty" },
       { "command": "codeGty.rename", "title": "Rename Terminal", "category": "Ghostty" },
-      { "command": "codeGty.restartSidecar", "title": "Restart PTY Sidecar", "category": "Ghostty" }
+      { "command": "codeGty.restartSidecar", "title": "Restart PTY Sidecar", "category": "Ghostty" },
+      { "command": "codeGty.manageSessions", "title": "Manage Sessions…", "category": "Ghostty" }
     ],
     "menus": {
       "webview/context": [
@@ -135,6 +136,11 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Let programs turn on the Kitty keyboard protocol. Turn off to troubleshoot key handling in a program."
+        },
+        "codeGty.persistentSessions": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Keep terminal sessions running when the window reloads or closes, and reattach them when the workspace opens again (like tmux). Sessions live in a per-user sidecar daemon; **Ghostty: Manage Sessions…** lists them, opens one in this window (taking it from another) or kills it. When not set, follows `#terminal.integrated.enablePersistentSessions#`. Takes effect after a reload."
         },
         "codeGty.images": {
           "type": "boolean",

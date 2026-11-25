@@ -38,6 +38,8 @@ export interface SessionHost {
   onSequence(s: TerminalSession, seq: UnknownSequence): void;
   onStatusChanged(s: TerminalSession): void;
   reopen(s: TerminalSession): void;
+  /** VS Code is closing or reloading the window: sessions must be left running. */
+  readonly shuttingDown: boolean;
 }
 
 export interface CreateOptions {
@@ -46,6 +48,8 @@ export interface CreateOptions {
   env?: Record<string, string | null>;
   shellPath?: string;
   shellArgs?: string[];
+  /** Reattach to this sidecar session (a restored or moved tab) instead of starting a shell. */
+  claim?: number;
 }
 
 const encoder = new TextEncoder();
@@ -324,10 +328,124 @@ export class TerminalSession implements SessionListener {
     }
     this.spawning = true;
     try {
-      await this.spawn(cols, rows);
+      if (this.options.claim) await this.claimOrSpawn(cols, rows);
+      else await this.spawn(cols, rows);
     } finally {
       this.spawning = false;
     }
+  }
+
+  /**
+   * Reattaches to a session the sidecar daemon kept (after a reload, or from
+   * another window). Its state comes back as a snapshot; if the session is
+   * gone, a new shell starts instead.
+   */
+  private async claimOrSpawn(cols: number, rows: number): Promise<void> {
+    const id = this.options.claim!;
+    this.options.claim = undefined;
+    let client: SidecarClient;
+    try {
+      client = await this.host.sidecar();
+    } catch (e) {
+      this.failed(`Could not start the terminal: ${(e as Error).message}`);
+      return;
+    }
+    // Frames that follow `claimed` can arrive before the engine exists.
+    this.claiming = { output: [] };
+    const got = client.persistent ? await client.claim(id, this) : undefined;
+    const early = this.claiming;
+    this.claiming = undefined;
+    if (!got) {
+      this.host.log.info(`Session ${id} is gone; starting a new shell`);
+      await this.spawn(cols, rows);
+      return;
+    }
+    this.sidecarClient = client;
+    this.sessionId = id;
+    try {
+      this.engine = this.createEngine(got.cols, got.rows, got.exact ? got.data : undefined);
+    } catch (e) {
+      this.host.log.error(`Session ${id}: snapshot restore failed: ${(e as Error).message}`);
+      this.engine = this.createEngine(got.cols, got.rows);
+    }
+    // Raw recent output (no exact state): written straight into the engine,
+    // because the sidecar already counts it as delivered.
+    if (!got.exact && got.data.length) this.engine.term.write(got.data);
+    for (const d of early.output) this.engine.push(d);
+    this.cols = got.cols;
+    this.rows = got.rows;
+    this.engine.setMetrics(this.metrics);
+    this.shellPid = got.pid ?? undefined;
+    this.cwd = got.meta?.cwd ?? this.cwd;
+    this.renamed = this.renamed ?? got.meta?.name;
+    this.sequenceTitle = this.engine.title.trim() || undefined;
+    this.spawned = true;
+    this.resolvePid();
+    this.host.log.info(`Session ${id}: reattached (${got.exact ? 'exact snapshot' : 'recent output only'}${got.exited ? ', exited' : ''})`);
+    this.updateTitle();
+    if (this.webviewReady) this.attachWebview();
+    this.persist();
+    // Fit the session to this window.
+    const want = this.pendingResize ?? { cols, rows };
+    this.pendingResize = undefined;
+    if (early.exit) this.onExit(early.exit);
+    else if (want.cols !== this.cols || want.rows !== this.rows) await this.onResize(want.cols, want.rows);
+  }
+
+  // ---- checkpoints (daemon mode) -------------------------------------------------
+
+  /** PTY bytes the engine has consumed since this window got the session. */
+  private consumed = 0;
+  private checkpointTimer: ReturnType<typeof setTimeout> | undefined;
+  private lastCheckpoint = 0;
+  /** Another window has this session now. */
+  private movedAway = false;
+  private claiming: { output: Uint8Array[]; exit?: ExitMsg } | undefined;
+
+  /**
+   * Sends the engine's state to the sidecar after output settles (and at
+   * least every 30 s while it does not), so the session can be restored
+   * exactly if this window goes away.
+   */
+  private scheduleCheckpoint(): void {
+    if (!this.sidecarClient?.persistent || this.exited) return;
+    clearTimeout(this.checkpointTimer);
+    const due = Math.max(0, Math.min(1000, this.lastCheckpoint + 30000 - Date.now()));
+    this.checkpointTimer = setTimeout(() => this.checkpointNow(), due);
+  }
+
+  /** The sidecar session id (stable across reloads in daemon mode). */
+  get id(): number {
+    return this.sessionId;
+  }
+
+  /** Saves the state for the next window (called when this one shuts down). */
+  checkpointNow(): void {
+    const e = this.engine;
+    if (!e || !this.spawned || this.exited || !this.sidecarClient) return;
+    if (!e.settled) {
+      this.scheduleCheckpoint();
+      return;
+    }
+    try {
+      const meta = { title: this.title, cwd: this.cwd, name: this.renamed, scrollback: webviewConfig().scrollback, workspace: vscode.workspace.name };
+      this.sidecarClient.checkpoint(this.sessionId, this.consumed, meta, e.snapshot());
+      this.lastCheckpoint = Date.now();
+    } catch (err) {
+      this.host.log.warn(`Session ${this.sessionId}: checkpoint failed: ${(err as Error).message}`);
+    }
+  }
+
+  /** Another window claimed this session (daemon mode). */
+  onDetached(): void {
+    if (this.exited) return;
+    this.exited = true;
+    this.movedAway = true;
+    clearTimeout(this.checkpointTimer);
+    this.endProgress();
+    const message = 'This terminal was opened in another window. Press any key to close the tab.';
+    this.engine?.inject(`\r\n\x1b[2m${message}\x1b[0m\r\n`);
+    this.post({ type: 'exit', message });
   }
 
   private xtversion(): string {
@@ -339,7 +457,7 @@ export class TerminalSession implements SessionListener {
     return v === 'off' || v === 'readWrite' ? v : 'write';
   }
 
-  private createEngine(cols: number, rows: number): HostEngine {
+  private createEngine(cols: number, rows: number, restore?: Uint8Array): HostEngine {
     const cfg = webviewConfig();
     this.vt = loadVtSync(this.host.vtModule(), { log: (l) => this.host.log.info(`[vt ${this.number}] ${l}`) });
     const opts: EngineOptions = {
@@ -353,6 +471,7 @@ export class TerminalSession implements SessionListener {
       answerback: gty().get<string>('answerback', ''),
       clipboard: this.clipboardPolicy(),
       images: cfg.images,
+      restore,
     };
     const engine = new HostEngine(this.vt, opts, {
       writePty: (d) => {
@@ -363,6 +482,8 @@ export class TerminalSession implements SessionListener {
       decodeImage: (req) => (this.sidecarClient && !this.exited ? this.sidecarClient.decode(this.sessionId, req) : Promise.resolve(undefined)),
       dropped: (n) => {
         if (this.spawned && n) this.sidecarClient?.ack(this.sessionId, n);
+        this.consumed += n;
+        this.scheduleCheckpoint();
       },
       title: (t) => {
         this.sequenceTitle = sanitize(t).trim() || undefined;
@@ -461,7 +582,8 @@ export class TerminalSession implements SessionListener {
   }
 
   onOutput(data: Uint8Array): void {
-    if (this.engine) this.engine.push(data);
+    if (this.claiming) this.claiming.output.push(data);
+    else if (this.engine) this.engine.push(data);
     else this.sidecarClient?.ack(this.sessionId, data.length);
   }
 
@@ -472,6 +594,10 @@ export class TerminalSession implements SessionListener {
   }
 
   private forward(data: Uint8Array, fromPty: boolean): void {
+    if (fromPty) {
+      this.consumed += data.length;
+      this.scheduleCheckpoint();
+    }
     const canDraw = this.webviewReady && this.attached && (this.panel.visible || gty().get<boolean>('retainContextWhenHidden', true));
     if (!canDraw) {
       // Nobody can draw it now: acknowledge it ourselves so the program runs
@@ -485,6 +611,10 @@ export class TerminalSession implements SessionListener {
   }
 
   onExit(exit: ExitMsg): void {
+    if (this.claiming) {
+      this.claiming.exit = exit;
+      return;
+    }
     if (this.exited) return;
     this.exited = true;
     this.resolvePid();
@@ -699,7 +829,13 @@ export class TerminalSession implements SessionListener {
   }
 
   private persist(): void {
-    const state: PersistedState = { cwd: this.cwd, title: this.title, renamed: this.renamed };
+    const state: PersistedState = {
+      cwd: this.cwd,
+      title: this.title,
+      renamed: this.renamed,
+      // Lets the restored tab reclaim its session after a reload.
+      sessionId: this.spawned && this.sidecarClient?.persistent && !this.exited ? this.sessionId : undefined,
+    };
     this.post({ type: 'persist', state });
   }
 
@@ -717,6 +853,20 @@ export class TerminalSession implements SessionListener {
     this.disposables = [];
     this.webviewReady = false;
     this.detachWebview();
+    clearTimeout(this.checkpointTimer);
+    if (this.sidecarClient?.persistent && !this.exited && this.spawned) {
+      // A window that is closing or reloading disposes its panels too; its
+      // sessions must live on. If this extension host is shutting down, it
+      // is gone before the timer fires.
+      await new Promise((r) => setTimeout(r, 250));
+      if (this.host.shuttingDown) {
+        this.checkpointNow();
+        this.sidecarClient.forget(this.sessionId);
+        this.disposeEngine();
+        this.host.onSessionClosed(this);
+        return;
+      }
+    }
     if (!this.exited && this.spawned) {
       // A webview tab cannot veto its own closing, so confirm afterwards and
       // offer to bring the tab back with its session intact.
@@ -740,6 +890,10 @@ export class TerminalSession implements SessionListener {
         }
       }
       this.kill();
+    } else if (this.exited && this.spawned && !this.movedAway && this.sidecarClient?.persistent) {
+      // The daemon keeps an exited session's status for the next window;
+      // this tab has shown it, so let the daemon drop it.
+      this.sidecarClient.kill(this.sessionId);
     }
     this.disposeEngine();
     this.status.clear();

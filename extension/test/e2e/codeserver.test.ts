@@ -111,8 +111,8 @@ test('the tab moves into a split and keeps working', async () => {
   await waitForFile('split.txt', 'split');
 });
 
-test('reload restores the tab with a fresh shell in the same directory', async () => {
-  await typeInTerminal('mkdir -p sub && cd sub');
+test('reload reattaches the tab to the same shell (persistent sessions)', async () => {
+  await typeInTerminal('mkdir -p sub && cd sub && KEPT=across-reload');
   // code-server saves webview state lazily: with 0.5 s here the restored
   // shell started in the old directory. Known limitation, see README.
   await page.waitForTimeout(5000);
@@ -122,8 +122,9 @@ test('reload restores the tab with a fresh shell in the same directory', async (
   const f = await terminalFrame();
   await f.locator('#terminal canvas').waitFor();
   await page.waitForTimeout(1500);
-  await typeInTerminal(`pwd > ${WS}/restored.txt`);
-  await waitForFile('restored.txt', `${WS}/sub`);
+  // The same shell: its directory and its unexported variable survived.
+  await typeInTerminal(`echo "$(pwd) $KEPT" > ${WS}/restored.txt`);
+  await waitForFile('restored.txt', `${WS}/sub across-reload`);
 });
 
 test('the host engine answers queries from a program in the terminal', async () => {
@@ -131,7 +132,7 @@ test('the host engine answers queries from a program in the terminal', async () 
   // and saved by the shell.
   rmSync(`${WS}/da.txt`, { force: true });
   await typeInTerminal(`printf '\\033[c'; read -rs -t 2 -d c r; echo "\${r:1}" > ${WS}/da.txt`);
-  await waitForFile('da.txt', '[?62;22;52');
+  await waitForFile('da.txt', '[?62;4;22;52'); // 4: sixel, through the image bridge
 });
 
 test('the WASM is served with the right type', async () => {

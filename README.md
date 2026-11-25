@@ -79,7 +79,7 @@ The tokens are BuildKit secrets, so they never end up in an image layer, and no 
 These are defaults to confirm or change:
 
 1. **Windows** is built (GNU target, cross-compiled with Zig) but untested. Treat it as preview until the checklist has been run on Windows.
-2. **Sessions do not survive a reload** in this version. A reload restores the tab with a fresh shell in the same directory.
+2. **Sessions survive reloads and closed windows** (`codeGty.persistentSessions`, on by default, following `terminal.integrated.enablePersistentSessions`). A per-user sidecar daemon keeps them, and the next window of the workspace reattaches its tabs with an exact snapshot of the screen. **Ghostty: Manage Sessions…** lists them, opens one in the current window (moving it from another window, like `tmux attach -d`) or kills it. With the setting off, a reload restores the tab with a fresh shell in the same directory.
 3. **Oldest VS Code version** is 1.90 (`engines.vscode`). Floating editor windows need 1.85 or later.
 4. **Manual checklist** for Windows, macOS, Remote SSH and WSL, in `docs/release-checklist.md`.
 5. **Name, publisher and licence** are placeholders: `code-gty`, publisher `code-gty`, MIT. libghostty-vt is MIT, so it is compatible with MIT and most other licences. Change `publisher` and `repository` in `extension/package.json` before publishing.

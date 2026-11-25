@@ -1,6 +1,6 @@
-# Sidecar protocol (version 1)
+# Sidecar protocol (version 2)
 
-The extension host starts `gty-sidecar` with no arguments and talks to it over stdin and stdout. stderr is free-form log text. When stdin closes, the sidecar sends SIGHUP to every session's process group, sends SIGKILL to any group still alive after one second, and exits.
+The sidecar runs in one of two modes. With `codeGty.persistentSessions` off, the extension host starts `gty-sidecar` with no arguments and talks to it over stdin and stdout. stderr is free-form log text. When stdin closes, the sidecar sends SIGHUP to every session's process group, sends SIGKILL to any group still alive after one second, and exits. With persistent sessions (the default), one daemon per user serves every window; see [Daemon](#daemon).
 
 ## Framing
 
@@ -30,6 +30,13 @@ u32 LE length | u8 kind | u32 LE session | payload
 | 13 | `query_process` | host to sidecar | empty |
 | 14 | `process_info` | sidecar to host | JSON `{name, busy}`; also pushed whenever the foreground process changes (Unix) |
 | 11 | `error` | sidecar to host | JSON `{message}` |
+| 17 | `auth` | host to daemon | the token from the state file; must be the first frame on a daemon connection |
+| 18 | `list` | host to daemon | empty |
+| 19 | `sessions` | daemon to host | JSON array of `{id, pid, exited, attached, mine, cols, rows, created (ms since epoch), meta}` |
+| 20 | `claim` | host to daemon | empty; takes the session over |
+| 21 | `claimed` | daemon to host | `u32 LE json length`, JSON `{cols, rows, pid, exact, exited, meta}`, then the data: a libghostty-vt snapshot when `exact`, else the recent raw output |
+| 22 | `detached` | daemon to host | JSON `{reason}`; another window claimed the session |
+| 23 | `checkpoint` | host to daemon | `u64 LE stream position`, `u32 LE meta length`, JSON meta, libghostty-vt snapshot |
 
 `env` is the child's complete environment: the sidecar does not pass on its own.
 
@@ -44,3 +51,13 @@ The single stdout thread merges output that arrives within 4 ms (up to 128 KiB) 
 ## Replay
 
 Each session keeps the last `replayLimit` bytes (default 2 MiB). `attach` snapshots the buffer under the same lock the reader uses to queue output. Every `output` frame queued before the snapshot is therefore also in the replay, and the host drops `output` frames between sending `attach` and receiving `replay`. `attach` resets the session's credit to the replay size.
+
+## Daemon
+
+`gty-sidecar --server <dir> --vt <ghostty-vt.wasm>` keeps sessions alive when windows reload or close, so the next window (or any other window of the same user) can reattach to them, like tmux.
+
+- **Finding it.** `<dir>` is `$XDG_RUNTIME_DIR/code-gty`, else `$TMPDIR/code-gty-<uid>`, or `%LOCALAPPDATA%\code-gty` on Windows; it is created with mode 0700. The daemon writes `daemon-v2.json` there (mode 0600): `{pid, protocol, build, token, socket}` on Unix (a socket in the same directory, mode 0600) or `{..., port}` on Windows (a loopback TCP port, with an exclusive lock file so only one daemon runs). A host that finds no live daemon starts one detached from itself, with its log in `<dir>/sidecar.log`.
+- **Authentication.** The first frame on a connection must be `auth` with the token, compared in constant time. Anything else closes the connection without a `hello`. Only the user can read the state file, so only they can connect.
+- **Ownership.** A session belongs to the window that spawned or last claimed it. Output goes only to the owner. When the owner disconnects, the session is detached: the daemon goes on reading the PTY and feeds the output into its own libghostty-vt engine (the same WASM module, run with wasmi on a thread of its own), so the screen stays current. `claim` from another window moves the session; the previous owner gets `detached`, and its tab says the terminal moved.
+- **Checkpoints.** The owner sends `checkpoint` about a second after output settles, and at least every 30 s while it does not. The stream position is the count of output bytes its engine consumed since it got the session. The daemon keeps the snapshot and the output after that position (up to 32 MiB; past that it gives up on an exact restore). On detach, its engine restores the snapshot and replays the rest, so `claimed` returns an exact snapshot. Without a checkpoint, `claimed` carries the recent raw output instead (`exact: false`).
+- **Lifetime.** Sessions stay until their process exits and the exit is collected by a claim, or until `kill`. A detached session whose process exits keeps its exit status for the next claim. The daemon exits once no client has been connected and no session has been running for 60 s.

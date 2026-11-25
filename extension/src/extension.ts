@@ -2,11 +2,15 @@ import * as vscode from 'vscode';
 import { CodeGtyApi, createApi } from './api';
 import { TerminalManager, VIEW_TYPE } from './manager';
 import type { TerminalSession } from './session';
+import type { SessionInfo } from './sidecar';
+
+let current: TerminalManager | undefined;
 
 export function activate(context: vscode.ExtensionContext): CodeGtyApi {
   const log = vscode.window.createOutputChannel('code-gty', { log: true });
   context.subscriptions.push(log);
   const manager = new TerminalManager(context, log);
+  current = manager;
 
   context.subscriptions.push(vscode.window.registerWebviewPanelSerializer(VIEW_TYPE, manager));
 
@@ -55,6 +59,7 @@ export function activate(context: vscode.ExtensionContext): CodeGtyApi {
     for (const s of manager.all) s.kill();
     await manager.restartSidecar();
   });
+  register('codeGty.manageSessions', () => manageSessions(manager));
   register(
     'codeGty.rename',
     withActive(async (s) => {
@@ -89,5 +94,72 @@ export function activate(context: vscode.ExtensionContext): CodeGtyApi {
 }
 
 export function deactivate(): void {
-  // Subscriptions dispose the manager, which kills sessions and the sidecar.
+  // Subscriptions then dispose the manager: with persistent sessions the
+  // daemon keeps them for the next window, otherwise they end with it.
+  current?.shutdown();
+  current = undefined;
+}
+
+function age(ms: number): string {
+  const m = Math.round((Date.now() - ms) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} days ago`;
+}
+
+interface SessionPick extends vscode.QuickPickItem {
+  info: SessionInfo;
+}
+
+/** Lists the sessions the sidecar daemon keeps (like `tmux ls`): attach here, or kill. */
+async function manageSessions(manager: TerminalManager): Promise<void> {
+  if (!manager.persistentSessions) {
+    const c = await vscode.window.showInformationMessage('Terminal sessions end with their window unless persistent sessions are on.', 'Open Setting');
+    if (c) void vscode.commands.executeCommand('workbench.action.openSettings', 'codeGty.persistentSessions');
+    return;
+  }
+  const kill: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon('trash'), tooltip: 'Kill Session' };
+  const qp = vscode.window.createQuickPick<SessionPick>();
+  qp.title = 'Ghostty Sessions';
+  qp.placeholder = 'Select a session to open it in this window';
+  qp.matchOnDescription = true;
+  qp.matchOnDetail = true;
+  const refresh = async () => {
+    qp.busy = true;
+    const list = await manager.listSessions();
+    const here = vscode.workspace.name;
+    list.sort((a, b) => Number(b.meta?.workspace === here) - Number(a.meta?.workspace === here) || b.created - a.created);
+    qp.items = list.map((info) => {
+      const where = info.mine ? 'this window' : info.attached ? 'another window' : 'detached';
+      const state = info.exited ? 'exited' : `pid ${info.pid ?? '?'}`;
+      return {
+        info,
+        label: `$(${info.exited ? 'circle-slash' : info.attached ? 'terminal' : 'debug-disconnect'}) ${info.meta?.name ?? info.meta?.title ?? `Session ${info.id}`}`,
+        description: [info.meta?.workspace, where].filter(Boolean).join(' · '),
+        detail: [info.meta?.cwd, `${info.cols}×${info.rows}`, state, `started ${age(info.created)}`].filter(Boolean).join('   '),
+        buttons: [kill],
+      };
+    });
+    if (!list.length) qp.placeholder = 'No sessions are running';
+    qp.busy = false;
+  };
+  qp.onDidTriggerItemButton(async (e) => {
+    await manager.killSession(e.item.info.id);
+    await new Promise((r) => setTimeout(r, 200));
+    await refresh();
+  });
+  qp.onDidAccept(() => {
+    const pick = qp.selectedItems[0];
+    qp.hide();
+    if (!pick) return;
+    if (pick.info.exited) {
+      void manager.killSession(pick.info.id);
+      return;
+    }
+    manager.attach(pick.info);
+  });
+  qp.onDidHide(() => qp.dispose());
+  qp.show();
+  await refresh();
 }

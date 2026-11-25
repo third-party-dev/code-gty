@@ -45,6 +45,8 @@ export interface PersistedState {
   cwd?: string;
   title?: string;
   renamed?: string;
+  /** The sidecar session to reclaim after a reload (persistent sessions). */
+  sessionId?: number;
 }
 
 export type HostToWebview =

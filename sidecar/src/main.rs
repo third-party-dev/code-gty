@@ -1,17 +1,25 @@
 //! gty-sidecar: a PTY broker for code-gty.
 //!
-//! The extension host talks to it over stdin/stdout with length-prefixed
-//! frames (see `protocol.rs`); stderr carries logs. One sidecar serves a whole
-//! VS Code window and multiplexes sessions by id. When stdin closes, every
-//! session is hung up and the process exits.
+//! Two modes, with the same length-prefixed frames (see `protocol.rs`):
+//!
+//! - stdin/stdout (default): one VS Code window owns this process. When stdin
+//!   closes, every session is hung up and the process exits.
+//! - `--server <dir>` (server.rs): a daemon that outlives windows, so sessions
+//!   survive reloads and can be reattached from any window, like tmux.
+//!
+//! Either way, output is routed by router.rs; stderr carries logs.
 
 mod decode;
 mod procinfo;
 mod protocol;
 mod replay;
+mod router;
+mod server;
 mod session;
+mod vtengine;
 
 use protocol::{kind, ErrorMsg, Frame, Hello, ResizeRequest, SpawnRequest};
+use router::{ClientId, Ctl, Router, Sessions};
 use session::{Out, Session};
 use std::collections::HashMap;
 use std::io::{self, BufReader, Write};
@@ -21,7 +29,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const BUILD_ID: &str = match option_env!("GTY_BUILD_ID") {
+pub const BUILD_ID: &str = match option_env!("GTY_BUILD_ID") {
     Some(id) => id,
     None => env!("CARGO_PKG_VERSION"),
 };
@@ -31,7 +39,12 @@ const MAX_BATCH: usize = 128 * 1024;
 const PROCESS_POLL: Duration = Duration::from_millis(500);
 const SHUTDOWN_GRACE: Duration = Duration::from_millis(1000);
 
-type Sessions = Arc<Mutex<HashMap<u32, Session>>>;
+/// What a connection handler needs: where replies go and where routing goes.
+pub struct Client {
+    pub id: ClientId,
+    pub writer: Sender<Out>,
+    pub router: Sender<Out>,
+}
 
 macro_rules! log {
     ($($arg:tt)*) => { eprintln!("[gty-sidecar] {}", format!($($arg)*)) };
@@ -45,20 +58,42 @@ fn main() {
             return;
         }
         Some("--selftest") => std::process::exit(selftest()),
+        Some("--server") => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            let Some(dir) = args.first() else {
+                eprintln!("usage: gty-sidecar --server <dir> [--vt <ghostty-vt.wasm>]");
+                std::process::exit(2);
+            };
+            let vt = args.iter().position(|a| a == "--vt").and_then(|i| args.get(i + 1)).map(Into::into);
+            std::process::exit(server::run(dir.into(), vt));
+        }
         Some(other) => {
-            eprintln!("usage: gty-sidecar [--version]  (unknown argument {other:?})");
+            eprintln!("usage: gty-sidecar [--version | --server <dir> [--vt <wasm>]]  (unknown argument {other:?})");
             std::process::exit(2);
         }
         None => {}
     }
 
+    // stdin/stdout mode: a single client, which owns every session.
+    let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
     let (tx, rx) = mpsc::channel::<Out>();
+    {
+        let router = Router::new(sessions.clone(), None, false);
+        thread::Builder::new().name("router".into()).spawn(move || router.run(rx)).expect("spawn router");
+    }
+    let (wtx, wrx) = mpsc::channel::<Out>();
     let writer = thread::Builder::new()
         .name("stdout".into())
-        .spawn(move || output_loop(rx))
+        .spawn(move || {
+            output_loop(wrx, io::stdout().lock());
+            // Host is gone; nothing more can be delivered.
+            std::process::exit(0);
+        })
         .expect("spawn stdout thread");
+    let _ = tx.send(Out::Ctl(Ctl::NewClient(1, wtx.clone())));
+    let client = Client { id: 1, writer: wtx, router: tx.clone() };
 
-    let _ = tx.send(Out::Frame(Frame::json(
+    let _ = client.writer.send(Out::Frame(Frame::json(
         kind::HELLO,
         0,
         &Hello {
@@ -69,13 +104,12 @@ fn main() {
         },
     )));
 
-    let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
     spawn_process_poller(sessions.clone(), tx.clone());
 
     let mut stdin = BufReader::with_capacity(256 * 1024, io::stdin().lock());
     loop {
         match protocol::read_frame(&mut stdin) {
-            Ok(Some(frame)) => handle(frame, &sessions, &tx),
+            Ok(Some(frame)) => handle(frame, &sessions, &client),
             Ok(None) => break,
             Err(e) => {
                 log!("protocol error, shutting down: {e}");
@@ -99,6 +133,7 @@ fn main() {
     // Other threads still hold senders, so do not wait for the writer to see
     // a closed channel; just let it drain what is queued.
     drop(tx);
+    drop(client);
     thread::sleep(Duration::from_millis(50));
     drop(writer);
     std::process::exit(0);
@@ -141,7 +176,7 @@ fn selftest() -> i32 {
                 out.extend_from_slice(&d);
             }
             Ok(Out::Frame(f)) if f.kind == kind::EXIT => break,
-            Ok(Out::Frame(_)) => {}
+            Ok(_) => {}
             Err(_) => {
                 eprintln!("selftest: timed out");
                 return 1;
@@ -157,8 +192,9 @@ fn selftest() -> i32 {
     i32::from(!ok)
 }
 
-fn handle(frame: Frame, sessions: &Sessions, tx: &Sender<Out>) {
+pub fn handle(frame: Frame, sessions: &Sessions, client: &Client) {
     let id = frame.session;
+    let tx = &client.writer;
     let err = |message: String| {
         let _ = tx.send(Out::Frame(Frame::json(kind::ERROR, id, &ErrorMsg { message })));
     };
@@ -175,11 +211,16 @@ fn handle(frame: Frame, sessions: &Sessions, tx: &Sender<Out>) {
             if map.contains_key(&id) {
                 return err(format!("session {id} already exists"));
             }
-            match Session::spawn(id, req, tx.clone()) {
+            // Route first, so output that arrives immediately has an owner.
+            let _ = client.router.send(Out::Ctl(Ctl::Spawned { client: client.id, session: id, cols: req.cols, rows: req.rows }));
+            match Session::spawn(id, req, client.router.clone()) {
                 Ok(s) => {
                     map.insert(id, s);
                 }
-                Err(e) => err(e),
+                Err(e) => {
+                    let _ = client.router.send(Out::Ctl(Ctl::Killed(id)));
+                    err(e)
+                }
             }
         }
         kind::INPUT => with_session(sessions, id, &err, |s| s.input(frame.payload)),
@@ -188,6 +229,7 @@ fn handle(frame: Frame, sessions: &Sessions, tx: &Sender<Out>) {
                 if let Err(e) = s.resize(r.cols, r.rows, r.width, r.height) {
                     err(format!("resize failed: {e}"));
                 }
+                let _ = client.router.send(Out::Ctl(Ctl::Resized { session: id, cols: r.cols, rows: r.rows }));
             }),
             Err(e) => err(format!("bad resize request: {e}")),
         },
@@ -208,6 +250,7 @@ fn handle(frame: Frame, sessions: &Sessions, tx: &Sender<Out>) {
                     s.kill();
                 }
             }
+            let _ = client.router.send(Out::Ctl(Ctl::Killed(id)));
         }
         kind::DECODE => decode_async(id, frame.payload, tx.clone()),
         kind::QUERY_PROCESS => with_session(sessions, id, &err, |s| {
@@ -215,6 +258,32 @@ fn handle(frame: Frame, sessions: &Sessions, tx: &Sender<Out>) {
                 let _ = tx.send(Out::Frame(Frame::json(kind::PROCESS_INFO, id, &info)));
             }
         }),
+        kind::LIST => {
+            let _ = client.router.send(Out::Ctl(Ctl::List(client.id)));
+        }
+        kind::CLAIM => {
+            let _ = client.router.send(Out::Ctl(Ctl::Claim { client: client.id, session: id }));
+        }
+        kind::CHECKPOINT => {
+            // u64 position | u32 meta length | meta JSON | snapshot
+            let p = &frame.payload;
+            if p.len() < 12 {
+                return err("checkpoint too short".into());
+            }
+            let position = u64::from_le_bytes(p[0..8].try_into().unwrap());
+            let meta_len = u32::from_le_bytes(p[8..12].try_into().unwrap()) as usize;
+            if p.len() < 12 + meta_len {
+                return err("checkpoint too short".into());
+            }
+            let _ = client.router.send(Out::Ctl(Ctl::Checkpoint {
+                client: client.id,
+                session: id,
+                position,
+                meta: p[12..12 + meta_len].to_vec(),
+                snapshot: p[12 + meta_len..].to_vec(),
+            }));
+        }
+        kind::AUTH => {}
         other => err(format!("unknown frame kind {other}")),
     }
 }
@@ -256,7 +325,7 @@ fn with_session(
 
 /// Pushes a `process_info` frame whenever a session's foreground process
 /// changes, so tab titles can follow `vim`, `htop` and so on.
-fn spawn_process_poller(sessions: Sessions, tx: Sender<Out>) {
+pub fn spawn_process_poller(sessions: Sessions, tx: Sender<Out>) {
     if cfg!(not(unix)) {
         return;
     }
@@ -276,10 +345,10 @@ fn spawn_process_poller(sessions: Sessions, tx: Sender<Out>) {
     });
 }
 
-/// Owns stdout. Coalesces PTY output for a few milliseconds per batch while
-/// keeping every frame in channel order.
-fn output_loop(rx: Receiver<Out>) {
-    let mut stdout = io::stdout().lock();
+/// Owns one client's output (stdout, or a socket). Coalesces PTY output for a
+/// few milliseconds per batch while keeping every frame in channel order.
+/// Returns when the client is gone.
+pub fn output_loop<W: Write>(rx: Receiver<Out>, mut stdout: W) {
     let mut pending: Vec<(u32, Vec<u8>)> = Vec::new();
     let mut pending_len = 0usize;
     let mut buf: Vec<u8> = Vec::with_capacity(MAX_BATCH + 1024);
@@ -306,6 +375,7 @@ fn output_loop(rx: Receiver<Out>) {
             flush_pending(pending, pending_len, buf);
             f.encode_into(buf);
         }
+        Out::Ctl(_) => {}
     };
 
     while let Ok(first) = rx.recv() {
@@ -326,8 +396,8 @@ fn output_loop(rx: Receiver<Out>) {
         }
         flush_pending(&mut pending, &mut pending_len, &mut buf);
         if stdout.write_all(&buf).and_then(|_| stdout.flush()).is_err() {
-            // Host is gone; nothing more can be delivered.
-            std::process::exit(0);
+            // The client is gone; nothing more can be delivered.
+            return;
         }
         buf.clear();
     }

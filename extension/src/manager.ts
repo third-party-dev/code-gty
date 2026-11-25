@@ -7,7 +7,8 @@ import * as vscode from 'vscode';
 import type { UnknownSequence } from '../vt/terminal';
 import { EnvPatch } from './env';
 import { CreateOptions, SessionHost, TerminalSession } from './session';
-import { SidecarClient } from './sidecar';
+import { defaultDaemonDir } from './daemon';
+import { SessionInfo, SidecarClient } from './sidecar';
 import { locateSidecar } from './sidecarBinary';
 import { affectsWebview, LaunchPlan, planLaunch } from './terminalConfig';
 import { renderTerminalHtml } from './html';
@@ -32,6 +33,7 @@ export class TerminalManager implements SessionHost, vscode.WebviewPanelSerializ
   readonly extensionVersion: string;
   private module: WebAssembly.Module | undefined;
   private readonly statusItem: vscode.StatusBarItem;
+  private closing = false;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -67,15 +69,19 @@ export class TerminalManager implements SessionHost, vscode.WebviewPanelSerializ
       const override = vscode.workspace.getConfiguration('codeGty').get<string | null>('sidecarPath');
       const bin = locateSidecar(this.context.extensionPath, override);
       if (!bin.verified) this.log.warn(`Using unverified sidecar at ${bin.path}`);
-      const client = new SidecarClient(bin.path, {
-        log: (line) => this.log.info(line),
-        onDied: (reason) => {
+      const options = {
+        log: (line: string) => this.log.info(line),
+        onDied: (reason: string) => {
+          if (this.closing) return;
           this.log.error(`Sidecar died: ${reason}`);
           if (this.client === client) this.client = undefined;
         },
-      });
+      };
+      const client = this.persistentSessions
+        ? SidecarClient.forDaemon({ ...options, binary: bin.path, dir: defaultDaemonDir(), vt: this.vtPath })
+        : new SidecarClient(bin.path, options);
       const hello = await client.start();
-      this.log.info(`Sidecar started: pid ${hello.pid}, build ${hello.build}, ${hello.os}`);
+      this.log.info(`Sidecar ${client.persistent ? 'daemon connected' : 'started'}: pid ${hello.pid}, build ${hello.build}, ${hello.os}`);
       this.client = client;
       return client;
     })();
@@ -84,12 +90,25 @@ export class TerminalManager implements SessionHost, vscode.WebviewPanelSerializ
     return this.starting;
   }
 
+  get shuttingDown(): boolean {
+    return this.closing;
+  }
+
+  /** Sessions outlive the window (in the sidecar daemon), like terminal.integrated.enablePersistentSessions. */
+  get persistentSessions(): boolean {
+    const own = vscode.workspace.getConfiguration('codeGty').inspect<boolean>('persistentSessions');
+    const set = own?.workspaceFolderValue ?? own?.workspaceValue ?? own?.globalValue;
+    if (set !== undefined) return set;
+    return vscode.workspace.getConfiguration('terminal.integrated').get<boolean>('enablePersistentSessions', true);
+  }
+
+  private get vtPath(): string {
+    return path.join(this.context.extensionPath, 'media', 'ghostty-vt.wasm');
+  }
+
   /** The libghostty-vt module, compiled once and instantiated per session. */
   vtModule(): WebAssembly.Module {
-    if (!this.module) {
-      const file = path.join(this.context.extensionPath, 'media', 'ghostty-vt.wasm');
-      this.module = new WebAssembly.Module(fs.readFileSync(file));
-    }
+    if (!this.module) this.module = new WebAssembly.Module(fs.readFileSync(this.vtPath));
     return this.module;
   }
 
@@ -146,13 +165,15 @@ export class TerminalManager implements SessionHost, vscode.WebviewPanelSerializ
   // ---- WebviewPanelSerializer -------------------------------------------
 
   async deserializeWebviewPanel(panel: vscode.WebviewPanel, state: PersistedState | undefined): Promise<void> {
-    // Version one: the sidecar lives with the extension host, so a reload
-    // brings the tab back with a fresh shell in the same directory.
+    // With persistent sessions the tab reclaims its shell from the sidecar
+    // daemon; otherwise (or if it is gone) a fresh shell starts in the same
+    // directory.
     if (!vscode.workspace.isTrusted) {
       panel.dispose();
       return;
     }
-    const s = new TerminalSession(this, panel, this.nextNumber(), { cwd: state?.cwd, name: state?.renamed }, true);
+    const claim = this.persistentSessions && typeof state?.sessionId === 'number' ? state.sessionId : undefined;
+    const s = new TerminalSession(this, panel, this.nextNumber(), { cwd: state?.cwd, name: state?.renamed, claim }, true);
     this.track(s);
   }
 
@@ -192,6 +213,37 @@ export class TerminalManager implements SessionHost, vscode.WebviewPanelSerializ
     return new vscode.Disposable(() => this.contributed.delete(key));
   }
 
+  /** Sessions the sidecar daemon keeps, in this window and others. */
+  async listSessions(): Promise<SessionInfo[]> {
+    const c = await this.sidecar();
+    return c.persistent ? c.list() : [];
+  }
+
+  /** Opens a kept session in this window, taking it from whichever window has it. */
+  attach(info: SessionInfo): TerminalSession | undefined {
+    const here = this.all.find((s) => s.id === info.id && !s.isExited);
+    if (here) {
+      here.panel.reveal(undefined, false);
+      return here;
+    }
+    const number = this.nextNumber();
+    const title = info.meta?.name ?? info.meta?.title ?? `Ghostty ${number}`;
+    const panel = this.createPanel(title, vscode.ViewColumn.Active);
+    const s = new TerminalSession(this, panel, number, { cwd: info.meta?.cwd, name: info.meta?.name, claim: info.id }, true);
+    this.track(s);
+    return s;
+  }
+
+  /** Ends a kept session, wherever it is shown. */
+  async killSession(id: number): Promise<void> {
+    const here = this.all.find((s) => s.id === id && !s.isExited);
+    if (here) {
+      here.kill();
+      return;
+    }
+    (await this.sidecar()).kill(id);
+  }
+
   async restartSidecar(): Promise<void> {
     this.client?.dispose();
     this.client = undefined;
@@ -221,8 +273,19 @@ export class TerminalManager implements SessionHost, vscode.WebviewPanelSerializ
     return n;
   }
 
+  /** VS Code is closing or reloading this window. */
+  shutdown(): void {
+    this.closing = true;
+  }
+
   private dispose(): void {
-    for (const s of this.sessions) s.kill();
+    this.closing = true;
+    if (this.client?.persistent) {
+      // The daemon keeps the sessions; leave it the latest state.
+      for (const s of this.sessions) s.checkpointNow();
+    } else {
+      for (const s of this.sessions) s.kill();
+    }
     this.client?.dispose();
   }
 }

@@ -1,7 +1,12 @@
-// Client for the gty-sidecar process. Free of `vscode` imports so the
-// conformance tests can drive a real sidecar with it.
+// Client for the gty-sidecar process: a child of this extension host over
+// stdin/stdout, or the daemon (sessions that survive window reloads) over a
+// socket. Free of `vscode` imports so the conformance tests can drive a real
+// sidecar with it.
 
 import { ChildProcess, spawn } from 'node:child_process';
+import { randomInt } from 'node:crypto';
+import type { Socket } from 'node:net';
+import { connectDaemon, DaemonOptions } from './daemon';
 import {
   decodeJson,
   encodeAck,
@@ -25,6 +30,35 @@ export interface SessionListener {
   onExit(exit: ExitMsg): void;
   onError(message: string): void;
   onProcessInfo?(info: ProcessInfoMsg): void;
+  /** The session was claimed by another window (daemon mode). */
+  onDetached?(reason: string): void;
+}
+
+/** A session the daemon holds (from `list`). */
+export interface SessionInfo {
+  id: number;
+  pid: number | null;
+  exited: boolean;
+  /** Some window owns it. */
+  attached: boolean;
+  /** This window owns it. */
+  mine: boolean;
+  cols: number;
+  rows: number;
+  created: number;
+  meta: { title?: string; cwd?: string; name?: string; workspace?: string } | null;
+}
+
+/** A claimed session's state. */
+export interface Claimed {
+  cols: number;
+  rows: number;
+  pid: number | null;
+  /** `data` is a libghostty-vt snapshot (exact) or raw recent output (approximate). */
+  exact: boolean;
+  exited: boolean;
+  meta: SessionInfo['meta'];
+  data: Uint8Array;
 }
 
 /** A decoded image: zlib-compressed RGBA frames. */
@@ -53,9 +87,12 @@ const encoder = new TextEncoder();
 
 export class SidecarClient {
   private proc: ChildProcess | undefined;
+  private socket: Socket | undefined;
+  private daemon: DaemonOptions | undefined;
+  private readonly lists: ((l: SessionInfo[]) => void)[] = [];
+  private readonly claims = new Map<number, { resolve: (c: Claimed | undefined) => void; listener: SessionListener }>();
   private readonly decoder = new FrameDecoder();
   private readonly listeners = new Map<number, SessionListener>();
-  private nextId = 1;
   private dead = false;
   private hello: Promise<HelloMsg>;
   private resolveHello!: (h: HelloMsg) => void;
@@ -76,9 +113,36 @@ export class SidecarClient {
     this.hello.catch(() => undefined);
   }
 
-  /** Starts the process and resolves with its hello frame. */
+  /** A client of the sidecar daemon, whose sessions outlive this window. */
+  static forDaemon(opts: DaemonOptions & SidecarOptions): SidecarClient {
+    const c = new SidecarClient(opts.binary, opts);
+    c.daemon = opts;
+    return c;
+  }
+
+  /** Whether sessions outlive this client (daemon mode). */
+  get persistent(): boolean {
+    return !!this.daemon;
+  }
+
+  /** Starts the process (or connects to the daemon) and resolves with its hello frame. */
   start(timeoutMs = 10000): Promise<HelloMsg> {
-    if (this.proc) return this.hello;
+    if (this.proc || this.socket || this.starting) return this.hello;
+    this.starting = true;
+    const timer = setTimeout(() => this.die('sidecar did not say hello in time'), timeoutMs);
+    void this.hello.finally(() => clearTimeout(timer)).catch(() => undefined);
+    if (this.daemon) {
+      connectDaemon(this.daemon).then(
+        (sock) => {
+          this.socket = sock;
+          sock.on('data', (chunk: Buffer) => this.onData(chunk));
+          sock.on('error', (e) => this.die(`sidecar connection: ${e.message}`));
+          sock.on('close', () => this.die('sidecar connection closed'));
+        },
+        (e: Error) => this.die(e.message),
+      );
+      return this.hello;
+    }
     const proc = spawn(this.binary, [], {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
@@ -96,8 +160,6 @@ export class SidecarClient {
     proc.on('error', (err) => this.die(`failed to start sidecar: ${err.message}`));
     proc.on('exit', (code, signal) => this.die(`sidecar exited (code ${code}, signal ${signal})`));
     proc.stdin!.on('error', () => undefined);
-    const timer = setTimeout(() => this.die('sidecar did not say hello in time'), timeoutMs);
-    void this.hello.finally(() => clearTimeout(timer)).catch(() => undefined);
     return this.hello;
   }
 
@@ -109,8 +171,11 @@ export class SidecarClient {
     return this.proc?.pid;
   }
 
+  private starting = false;
+
+  /** A new session id. Random, because several windows share a daemon. */
   allocateId(): number {
-    return this.nextId++;
+    return randomInt(1, 0x7fffffff);
   }
 
   spawnSession(id: number, req: SpawnRequest, listener: SessionListener): void {
@@ -193,6 +258,59 @@ export class SidecarClient {
     pending.resolve(frames.length ? { width, height, frames } : undefined);
   }
 
+  /** Every session the sidecar holds. */
+  list(timeoutMs = 5000): Promise<SessionInfo[]> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve([]), timeoutMs);
+      this.lists.push((l) => {
+        clearTimeout(timer);
+        resolve(l);
+      });
+      this.send(encodeFrame(Kind.LIST, 0));
+    });
+  }
+
+  /**
+   * Takes a session over (from no one, or from another window). Its output
+   * then comes to `listener`. Resolves undefined if there is no such session.
+   */
+  claim(id: number, listener: SessionListener, timeoutMs = 15000): Promise<Claimed | undefined> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.claims.delete(id);
+        resolve(undefined);
+      }, timeoutMs);
+      this.claims.set(id, {
+        listener,
+        resolve: (c) => {
+          clearTimeout(timer);
+          resolve(c);
+        },
+      });
+      this.send(encodeFrame(Kind.CLAIM, id));
+    });
+  }
+
+  /**
+   * The engine state at `position` bytes of output since this client got the
+   * session, so the session can be restored exactly if this window goes away.
+   */
+  checkpoint(id: number, position: number, meta: object, snapshot: Uint8Array): void {
+    const m = encoder.encode(JSON.stringify(meta));
+    const payload = new Uint8Array(12 + m.length + snapshot.length);
+    const dv = new DataView(payload.buffer);
+    dv.setBigUint64(0, BigInt(position), true);
+    dv.setUint32(8, m.length, true);
+    payload.set(m, 12);
+    payload.set(snapshot, 12 + m.length);
+    if (payload.length + 16 <= MAX_FRAME) this.send(encodeFrame(Kind.CHECKPOINT, id, payload));
+  }
+
+  /** Stops receiving a session's output without ending it (daemon mode). */
+  forget(id: number): void {
+    this.listeners.delete(id);
+  }
+
   queryProcess(id: number): void {
     this.send(encodeFrame(Kind.QUERY_PROCESS, id));
   }
@@ -203,6 +321,12 @@ export class SidecarClient {
   }
 
   dispose(): void {
+    if (this.socket) {
+      // Daemon mode: the sessions live on; only this connection ends.
+      this.dead = true;
+      this.socket.end();
+      return;
+    }
     if (!this.proc) return;
     this.dead = true;
     // Closing stdin is the shutdown signal; the sidecar hangs up its shells.
@@ -214,8 +338,12 @@ export class SidecarClient {
   }
 
   private send(bytes: Uint8Array): void {
-    if (this.dead || !this.proc?.stdin?.writable) return;
-    this.proc.stdin.write(bytes);
+    if (this.dead) return;
+    if (this.socket) {
+      if (this.socket.writable) this.socket.write(bytes);
+      return;
+    }
+    if (this.proc?.stdin?.writable) this.proc.stdin.write(bytes);
   }
 
   private onData(chunk: Buffer): void {
@@ -225,6 +353,7 @@ export class SidecarClient {
     } catch (e) {
       this.die(`protocol error: ${(e as Error).message}`);
       this.proc?.kill();
+      this.socket?.destroy();
       return;
     }
     for (const f of frames) this.dispatch(f);
@@ -243,6 +372,24 @@ export class SidecarClient {
     }
     if (f.kind === Kind.DECODED) {
       this.onDecoded(f.payload);
+      return;
+    }
+    if (f.kind === Kind.SESSIONS) {
+      this.lists.shift()?.(decodeJson<SessionInfo[]>(f));
+      return;
+    }
+    const claim = this.claims.get(f.session);
+    if (claim && (f.kind === Kind.CLAIMED || f.kind === Kind.ERROR)) {
+      this.claims.delete(f.session);
+      if (f.kind === Kind.ERROR) {
+        claim.resolve(undefined);
+        return;
+      }
+      const dv = new DataView(f.payload.buffer, f.payload.byteOffset, f.payload.byteLength);
+      const len = dv.getUint32(0, true);
+      const head = JSON.parse(new TextDecoder().decode(f.payload.subarray(4, 4 + len))) as Omit<Claimed, 'data'>;
+      this.listeners.set(f.session, claim.listener);
+      claim.resolve({ ...head, data: f.payload.slice(4 + len) });
       return;
     }
     const l = this.listeners.get(f.session);
@@ -269,13 +416,17 @@ export class SidecarClient {
       case Kind.PROCESS_INFO:
         l.onProcessInfo?.(decodeJson<ProcessInfoMsg>(f));
         break;
+      case Kind.DETACHED:
+        this.listeners.delete(f.session);
+        l.onDetached?.(decodeJson<{ reason: string }>(f).reason);
+        break;
       default:
         this.options.log?.(`unexpected frame kind ${f.kind}`);
     }
   }
 
   private die(reason: string): void {
-    if (this.dead && !this.proc) return;
+    if (this.dead && !this.proc && !this.socket) return;
     const wasDead = this.dead;
     this.dead = true;
     const detail = this.stderrTail.trim() ? `${reason}\n${this.stderrTail.trim()}` : reason;
@@ -291,6 +442,9 @@ export class SidecarClient {
       d.resolve(undefined);
     }
     this.decodes.clear();
+    for (const [, c] of this.claims) c.resolve(undefined);
+    this.claims.clear();
+    for (const l of this.lists.splice(0)) l([]);
     this.options.onDied?.(detail);
   }
 }

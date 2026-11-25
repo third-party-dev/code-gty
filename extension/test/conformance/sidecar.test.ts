@@ -7,6 +7,7 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
+import { PROTOCOL_VERSION } from '../../src/protocol';
 import type { ExitMsg, ProcessInfoMsg, SpawnRequest } from '../../src/protocol';
 import { SessionListener, SidecarClient } from '../../src/sidecar';
 
@@ -83,7 +84,7 @@ test('hello carries protocol and build', async () => {
   const c = new SidecarClient(BIN);
   clients.push(c);
   const hello = await c.start();
-  assert.equal(hello.protocol, 1);
+  assert.equal(hello.protocol, PROTOCOL_VERSION);
   assert.ok(hello.build.length > 0);
   assert.equal(typeof hello.pid, 'number');
 });

@@ -16,6 +16,7 @@
 
 import { Vt } from '../../vt/core';
 import { mode } from '../../vt/terminal';
+import { restoreSnapshot } from '../../vt/snapshot';
 import type { DecodedImage, DecodeRequest } from '../sidecar';
 import { classifyDcs, classifyImageOsc, itermPlacement, kittyCommands, parseItermArgs } from './imageBridge';
 import { format, selectOutput } from '../../vt/selection';
@@ -97,6 +98,8 @@ export interface EngineOptions {
   clipboard: 'off' | 'write' | 'readWrite';
   /** Kitty graphics (default on). */
   images?: boolean;
+  /** Start from this snapshot (a claimed session) instead of an empty screen. */
+  restore?: Uint8Array;
 }
 
 /** Image storage per screen, the same in both engines. */
@@ -134,9 +137,7 @@ export class HostEngine {
   ) {
     this.clipboardPolicy = opts.clipboard;
     this.imagesOn = opts.images !== false;
-    this.term = Terminal.create(vt, {
-      cols: opts.cols,
-      rows: opts.rows,
+    const termOpts = {
       scrollbackLines: opts.scrollbackLines,
       scrollbackBytes: Math.max(1, opts.scrollbackLines) * BYTES_PER_LINE,
       continuationMaxBytes: 64 * 1024,
@@ -150,7 +151,9 @@ export class HostEngine {
       xtversion: opts.xtversion,
       answerback: opts.answerback,
       effects: this.effects(),
-    });
+    };
+    // A session claimed back from the sidecar daemon starts from its snapshot.
+    this.term = opts.restore ? restoreSnapshot(vt, opts.restore, termOpts) : Terminal.create(vt, { cols: opts.cols, rows: opts.rows, ...termOpts });
   }
 
   private effects(): Parameters<Terminal['setEffects']>[0] {
@@ -578,6 +581,11 @@ export class HostEngine {
 
   paste(text: string, allowUnsafe: boolean): 'pasted' | 'empty' | 'rejected' {
     return this.term.paste(text, { allowUnsafe });
+  }
+
+  /** Nothing in flight (no image decode, no held clipboard read): a snapshot now is consistent. */
+  get settled(): boolean {
+    return this.state === 'idle' && !this.collecting;
   }
 
   get title(): string {

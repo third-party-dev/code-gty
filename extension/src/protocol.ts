@@ -3,7 +3,7 @@
 // Frame: u32 LE length | u8 kind | u32 LE session | payload, where length
 // counts kind + session + payload.
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 export const MAX_FRAME = 16 * 1024 * 1024;
 
 export const Kind = {
@@ -25,6 +25,18 @@ export const Kind = {
   DECODE: 15,
   /** Reply to DECODE (sidecar to host). */
   DECODED: 16,
+  /** Daemon mode: first frame on a connection, carrying the token. */
+  AUTH: 17,
+  /** List the sessions the sidecar holds; answered with SESSIONS. */
+  LIST: 18,
+  SESSIONS: 19,
+  /** Take a session over; answered with CLAIMED (or ERROR). */
+  CLAIM: 20,
+  CLAIMED: 21,
+  /** The session was claimed by another window. */
+  DETACHED: 22,
+  /** Engine state at an output position, for restoring the session later. */
+  CHECKPOINT: 23,
 } as const;
 
 export interface Frame {

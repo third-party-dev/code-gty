@@ -8,7 +8,7 @@
 
 use std::io::{self, Read};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 /// Largest frame either side will accept. Guards against a corrupt length
 /// prefix allocating gigabytes.
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
@@ -26,6 +26,14 @@ pub mod kind {
     pub const QUERY_PROCESS: u8 = 13;
     /// Decode an image (iTerm2 inline image file or sixel); see decode.rs.
     pub const DECODE: u8 = 15;
+    /// Daemon mode: the first frame on a connection, carrying the token.
+    pub const AUTH: u8 = 17;
+    /// List every session the sidecar holds.
+    pub const LIST: u8 = 18;
+    /// Take a session over (from no one, or from another window).
+    pub const CLAIM: u8 = 20;
+    /// The owner's engine state at a stream position; see router.rs.
+    pub const CHECKPOINT: u8 = 23;
     // sidecar -> host
     pub const HELLO: u8 = 1;
     pub const OUTPUT: u8 = 5;
@@ -36,6 +44,12 @@ pub mod kind {
     pub const PROCESS_INFO: u8 = 14;
     /// Reply to DECODE, on the same session id.
     pub const DECODED: u8 = 16;
+    /// Reply to LIST: JSON array of sessions.
+    pub const SESSIONS: u8 = 19;
+    /// Reply to CLAIM: `u32 json length | json | snapshot or raw replay`.
+    pub const CLAIMED: u8 = 21;
+    /// The session was claimed by another client.
+    pub const DETACHED: u8 = 22;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

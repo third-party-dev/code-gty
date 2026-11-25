@@ -16,7 +16,10 @@ Environments: Windows x64, Windows arm64, macOS arm64, macOS x64, Remote SSH (Li
 - [ ] Ctrl+P, the Command Palette, Ctrl+\` and tab switching reach the workbench; Ctrl+C, Ctrl+R and Ctrl+D reach the shell.
 - [ ] Switching the colour theme recolours the terminal and keeps its content.
 - [ ] After `cd /tmp`, **New Terminal to the Side** starts in `/tmp`. Ctrl+Up and Ctrl+Down jump between prompts.
-- [ ] Reload the window: the tab returns with a "Session restarted" divider in the same directory.
+- [ ] Run `X=1; for i in $(seq 100); do echo $i; sleep 0.1; done`, then reload the window right away: the tab comes back to the same shell (`echo $X` prints 1) with every number up to 100 shown, including those printed during the reload.
+- [ ] Close the window, reopen the workspace: the tabs reattach to their shells.
+- [ ] **Ghostty: Manage Sessions…** in a second window lists the first window's sessions; opening one moves it (the first window's tab says it moved) and killing one ends it.
+- [ ] With `codeGty.persistentSessions` off, a reload returns the tab with a "Session restarted" divider in the same directory.
 - [ ] Close a tab while `sleep 100` is running: a confirmation appears, and **Keep Running** brings the tab back with the session intact.
 - [ ] `exit` closes the tab; `exit 3` leaves it open with the exit message.
 - [ ] `echo $TERM_PROGRAM` prints `vscode`, and `code somefile` opens in the **current** window.

@@ -24,6 +24,8 @@ pub enum Out {
     /// PTY output, eligible for coalescing.
     Data(u32, Vec<u8>),
     Frame(Frame),
+    /// Routing control (only on the router's channel).
+    Ctl(crate::router::Ctl),
 }
 
 struct Flow {
@@ -197,6 +199,24 @@ impl Session {
 
     pub fn resize(&self, cols: u16, rows: u16, width: u16, height: u16) -> Result<(), String> {
         self.master.resize(size(cols, rows, width, height)).map_err(|e| e.to_string())
+    }
+
+    /// Forgets unacknowledged output, when the client that would have
+    /// acknowledged it is gone (detach) or replaced (claim).
+    pub fn reset_credit(&self) {
+        let mut flow = self.shared.flow.lock().unwrap();
+        flow.unacked = 0;
+        self.shared.flow_cv.notify_all();
+    }
+
+    /// The raw replay buffer and whether it lost earlier output.
+    pub fn replay_bytes(&self) -> (Vec<u8>, bool) {
+        let replay = self.shared.replay.lock().unwrap();
+        (replay.snapshot(), replay.truncated())
+    }
+
+    pub fn pid(&self) -> Option<u32> {
+        self.pid
     }
 
     pub fn ack(&self, bytes: usize) {
