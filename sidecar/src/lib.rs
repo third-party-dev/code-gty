@@ -172,18 +172,34 @@ fn selftest() -> i32 {
         }
     };
     let mut out = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // Answer the queries a terminal would: newer ConPTY (Windows Server
+    // 2025, Windows 11 24H2) asks for device attributes (DA1) and the cursor
+    // position when it starts, and waits for the answers.
+    let (mut da1, mut cpr) = (0, 0);
+    let count = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).filter(|w| *w == needle).count();
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         match rx.recv_timeout(left) {
             Ok(Out::Data(_, d)) => {
                 session.ack(d.len());
                 out.extend_from_slice(&d);
+                let asked = count(&out, b"\x1b[c") + count(&out, b"\x1b[0c");
+                for _ in da1..asked {
+                    session.input(b"\x1b[?62;22c".to_vec());
+                }
+                da1 = da1.max(asked);
+                let asked = count(&out, b"\x1b[6n");
+                for _ in cpr..asked {
+                    session.input(b"\x1b[1;1R".to_vec());
+                }
+                cpr = cpr.max(asked);
             }
             Ok(Out::Frame(f)) if f.kind == kind::EXIT => break,
             Ok(_) => {}
             Err(_) => {
-                eprintln!("selftest: timed out");
+                eprintln!("selftest: timed out; {da1} DA1 and {cpr} cursor-position queries answered; output so far: {:?}",
+                    String::from_utf8_lossy(&out));
                 return 1;
             }
         }

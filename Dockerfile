@@ -91,7 +91,7 @@ RUN set -eux; \
     echo "${sum}  /tmp/zig.tar.xz" | sha256sum -c -; \
     mkdir -p /opt/zig && tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1 && rm /tmp/zig.tar.xz; \
     ln -s /opt/zig/zig /usr/local/bin/zig; zig version
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,id=cargo-rust-base,sharing=locked,target=/usr/local/cargo/registry \
     cargo install --locked cargo-zigbuild --version ${CARGO_ZIGBUILD_VERSION} \
  && rustup component add clippy \
  && rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl \
@@ -151,6 +151,9 @@ RUN set -eux; \
 # (WebView2 is part of Windows).
 #   docker build --target app-out --output type=local,dest=dist/app .
 # ---------------------------------------------------------------------------
+# Each Rust stage has its own Cargo registry cache (id=...): builds that run
+# at once must not share one, because Cargo's lock is outside the mount, so
+# two of them unpacking the same crate collide ("File exists").
 FROM scratch AS app-src
 COPY sidecar/ /src/sidecar/
 COPY app/Cargo.toml app/Cargo.lock app/build.rs /src/app/
@@ -171,7 +174,7 @@ ENV GTY_BUILD_ID=${BUILD_ID} CARGO_INCREMENTAL=0 \
     RUSTFLAGS="--remap-path-prefix=/src=. --remap-path-prefix=/usr/local/cargo=cargo"
 COPY --from=app-src /src /src
 WORKDIR /src/app
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,id=cargo-app-linux-x64,sharing=locked,target=/usr/local/cargo/registry \
     sh -n gty.sh \
  && cargo clippy --locked --release -- -D warnings \
  && cargo build --locked --release \
@@ -189,13 +192,13 @@ ENV GTY_BUILD_ID=${BUILD_ID} CARGO_INCREMENTAL=0 \
 FROM app-cross-debian AS app-linux-arm64
 RUN cross.sh linux-arm64 setup
 COPY --from=app-src /src /src
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,id=cargo-app-linux-arm64,sharing=locked,target=/usr/local/cargo/registry \
     cross.sh linux-arm64 build && /src/app/pack.sh /out/gty /out/gty-linux-arm64 linux-arm64
 
 FROM app-cross-debian AS app-linux-armhf
 RUN cross.sh linux-armhf setup
 COPY --from=app-src /src /src
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,id=cargo-app-linux-armhf,sharing=locked,target=/usr/local/cargo/registry \
     cross.sh linux-armhf build && /src/app/pack.sh /out/gty /out/gty-linux-armhf linux-armhf
 
 # alpine-x64 (native), alpine-arm64 (an aarch64 Alpine sysroot and clang).
@@ -213,13 +216,13 @@ ENV GTY_BUILD_ID=${BUILD_ID} CARGO_INCREMENTAL=0 \
 FROM app-cross-alpine AS app-alpine-x64
 RUN cross.sh alpine-x64 setup
 COPY --from=app-src /src /src
-RUN --mount=type=cache,target=/root/.cargo/registry \
+RUN --mount=type=cache,id=cargo-app-alpine-x64,sharing=locked,target=/root/.cargo/registry \
     cross.sh alpine-x64 build && /src/app/pack.sh /out/gty /out/gty-alpine-x64 alpine-x64
 
 FROM app-cross-alpine AS app-alpine-arm64
 RUN cross.sh alpine-arm64 setup
 COPY --from=app-src /src /src
-RUN --mount=type=cache,target=/root/.cargo/registry \
+RUN --mount=type=cache,id=cargo-app-alpine-arm64,sharing=locked,target=/root/.cargo/registry \
     cross.sh alpine-arm64 build && /src/app/pack.sh /out/gty /out/gty-alpine-arm64 alpine-arm64
 
 # win32-x64, win32-arm64: Zig, as the sidecar.
@@ -229,7 +232,7 @@ ARG BUILD_ID=0.1.0
 ENV GTY_BUILD_ID=${BUILD_ID} CARGO_INCREMENTAL=0 \
     RUSTFLAGS="--remap-path-prefix=/src=. --remap-path-prefix=/usr/local/cargo=cargo"
 COPY --from=app-src /src /src
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,id=cargo-app-win32,sharing=locked,target=/usr/local/cargo/registry \
     cross.sh win32-x64 build && mv /out/gty.exe /out/gty-win32-x64.exe \
  && cross.sh win32-arm64 build && mv /out/gty.exe /out/gty-win32-arm64.exe
 
@@ -247,7 +250,7 @@ ARG BUILD_ID=0.1.0
 ENV GTY_BUILD_ID=${BUILD_ID} CARGO_INCREMENTAL=0 \
     RUSTFLAGS="--remap-path-prefix=/src=. --remap-path-prefix=/usr/local/cargo=cargo"
 COPY --from=app-src /src /src
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,id=cargo-app-darwin,sharing=locked,target=/usr/local/cargo/registry \
     for a in x64 arm64; do \
       cross.sh darwin-$a build && mv /out/gty /out/gty-darwin-$a && mv /out/gty.app.zip /out/gty-darwin-$a.app.zip || exit 1; \
     done; ls -l /out
