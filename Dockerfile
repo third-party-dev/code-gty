@@ -270,7 +270,7 @@ RUN set -e; \
 # from memory, then from the cache.
 FROM ${DEBIAN_IMAGE} AS test-app
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      libwebkit2gtk-4.1-0 python3-minimal xvfb xauth xdotool imagemagick fonts-dejavu-core procps \
+      libwebkit2gtk-4.1-0 python3-minimal xvfb xauth xdotool xclip imagemagick fonts-dejavu-core procps \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=app-build /out/gty-linux-x64 /usr/local/bin/gty
 COPY app/test/run.sh /test/run.sh
@@ -284,7 +284,7 @@ RUN OUT=/tmp/out xvfb-run -a -s "-screen 0 1280x800x24" /test/run.sh \
 
 # The same on Alpine, with the musl build.
 FROM ${ALPINE_IMAGE} AS test-app-alpine
-RUN apk add --no-cache webkit2gtk-4.1 python3 xvfb-run xdotool imagemagick font-dejavu procps-ng coreutils
+RUN apk add --no-cache webkit2gtk-4.1 python3 xvfb-run xdotool xclip imagemagick font-dejavu procps-ng coreutils
 COPY --from=app-alpine-x64 /out/gty-alpine-x64 /usr/local/bin/gty
 COPY app/test/run.sh /test/run.sh
 RUN adduser -D tester

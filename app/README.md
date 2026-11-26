@@ -30,6 +30,8 @@ sudo dnf install webkit2gtk4.1           # Fedora
 apk add webkit2gtk-4.1                   # Alpine
 ```
 
+The clipboard is GTK's on Linux, so copy and paste work the same on X11 and on every Wayland compositor; on Wayland, as with any native app, a program in the terminal can set or read the clipboard (OSC 52) only while the window has focus. Windows uses its own clipboard.
+
 One window holds one terminal for now. Closing the window ends its shell (with the same "still running" confirmation as a VS Code tab), and so does `exit`.
 
 ## Settings

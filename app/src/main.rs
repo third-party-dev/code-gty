@@ -14,6 +14,7 @@
 
 mod assets;
 mod bridge;
+mod clipboard;
 mod daemon;
 #[cfg(all(windows, target_env = "gnu"))]
 mod webview2_loader;
@@ -46,6 +47,8 @@ enum FromPage {
 
 enum UserEvent {
     Page(FromPage),
+    /// The clipboard's text, for the page's ClipboardRead `id`.
+    ClipboardText { id: u64, text: String },
 }
 
 fn main() {
@@ -175,6 +178,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy: EventLoopProxy<UserEvent> = event_loop.create_proxy();
+    let clipboard_proxy = proxy.clone();
     let window = WindowBuilder::new()
         .with_title("Ghostty")
         .with_inner_size(tao::dpi::LogicalSize::new(960.0, 600.0))
@@ -207,7 +211,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         builder.build_gtk(window.default_vbox().ok_or("no GTK container")?)?
     };
 
-    let mut clipboard = arboard::Clipboard::new().map_err(|e| eprintln!("[gty] no clipboard: {e}")).ok();
+    let mut clipboard = clipboard::Clipboard::new();
     let mut close_asked: Option<Instant> = None;
     let send = move |webview: &wry::WebView, event: serde_json::Value| {
         let _ = webview.evaluate_script(&format!("window.__gtyEvent && window.__gtyEvent({event})"));
@@ -230,21 +234,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Event::UserEvent(UserEvent::Page(m)) => match m {
                 FromPage::Title { title } => window.set_title(&title),
                 FromPage::Open { url } => open_url(&url),
-                FromPage::ClipboardWrite { text } => {
-                    if let Some(c) = clipboard.as_mut() {
-                        if let Err(e) = c.set_text(text) {
-                            eprintln!("[gty] clipboard: {e}");
-                        }
-                    }
-                }
+                FromPage::ClipboardWrite { text } => clipboard.set_text(&text),
                 FromPage::ClipboardRead { id } => {
-                    let text = clipboard.as_mut().and_then(|c| c.get_text().ok()).unwrap_or_default();
-                    send(&webview, serde_json::json!({ "type": "reply", "id": id, "value": text }));
+                    let proxy = clipboard_proxy.clone();
+                    clipboard.read_text(move |text| {
+                        let _ = proxy.send_event(UserEvent::ClipboardText { id, text });
+                    });
                 }
                 FromPage::Notify { title, body } => notify(&title, &body),
                 FromPage::Log { level, message } => eprintln!("[gty {level}] {message}"),
                 FromPage::Quit => *control_flow = ControlFlow::Exit,
             },
+            Event::UserEvent(UserEvent::ClipboardText { id, text }) => {
+                send(&webview, serde_json::json!({ "type": "reply", "id": id, "value": text }));
+            }
             _ => {}
         }
     });

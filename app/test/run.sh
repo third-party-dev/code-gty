@@ -1,7 +1,9 @@
 #!/bin/sh
 # End to end for the native app under Xvfb: the real binary, the real web
 # view (WebKitGTK) and a real PTY. A test shell records what the page told
-# the PTY (its size, from the window) and what was typed into the window.
+# the PTY (its size, from the window) and what was typed into the window,
+# and the clipboard is checked both ways with xclip: a program sets it (OSC
+# 52), and Ctrl+Shift+V pastes from it.
 set -eu
 OUT=${OUT:-/tmp/out}
 mkdir -p "$OUT"
@@ -20,6 +22,10 @@ printf '\033[1;31mhello\033[0m from \033[4mgty\033[0m: \033[38;2;80;200;120mtrue
 printf 'type here> '
 read -r line
 echo "\$line" > "$OUT/typed"
+printf '\033]52;c;%s\a' "\$(printf 'set by osc 52' | base64)"
+printf 'paste here> '
+read -r line
+echo "\$line" > "$OUT/pasted"
 sleep 0.3
 exit 0
 SH
@@ -56,6 +62,22 @@ xdotool key Return
 wait_for "$OUT/typed" 20
 echo "typed: $(cat "$OUT/typed")"
 [ "$(cat "$OUT/typed")" = 'typed in the window' ]
+
+# The clipboard (GTK's): the program's OSC 52 reaches it...
+i=0
+until [ "$(xclip -o -selection clipboard 2>/dev/null)" = 'set by osc 52' ]; do
+  i=$((i + 1)); [ "$i" -lt 100 ] || { echo "OSC 52 did not set the clipboard: '$(xclip -o -selection clipboard 2>&1)'"; cat "$OUT/gty.log"; exit 1; }
+  sleep 0.1
+done
+echo "clipboard after OSC 52: $(xclip -o -selection clipboard)"
+# ...and the window pastes what another program put there.
+printf 'pasted from another program' | xclip -selection clipboard
+xdotool key ctrl+shift+v
+sleep 0.3
+xdotool key Return
+wait_for "$OUT/pasted" 20
+echo "pasted: $(cat "$OUT/pasted")"
+[ "$(cat "$OUT/pasted")" = 'pasted from another program' ]
 
 # The shell exits 0, so the tab (and with it the app) closes.
 i=0

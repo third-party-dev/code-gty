@@ -15,13 +15,20 @@ path = "src/main.rs"
 # The sidecar, linked in: `gty --server` is the session daemon, the same one
 # the VS Code extension uses.
 gty-sidecar = { path = "../sidecar" }
-arboard = { version = "=3.7.0", default-features = false, features = ["wayland-data-control"] }
 getrandom = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tao = "=0.37.2"
 tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake"] }
 wry = "=0.57.2"
+
+# The clipboard (src/clipboard.rs): GTK's where the window is GTK's (the gtk
+# crate tao and wry already use), arboard on Windows and macOS.
+[target.'cfg(not(any(target_os = "windows", target_os = "macos")))'.dependencies]
+gtk = "=0.18.2"
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+arboard = { version = "=3.7.0", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
