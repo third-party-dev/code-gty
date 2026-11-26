@@ -276,7 +276,15 @@ fn notify(title: &str, body: &str) {
     {
         let _ = std::process::Command::new("notify-send").args(["--app-name=Ghostty", "--", title, body]).spawn();
     }
-    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    // The text goes in as arguments, never into the script, so it cannot run anything.
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("osascript")
+            .args(["-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)"])
+            .args(["-e", "end run", "--", title, body])
+            .spawn();
+    }
+    #[cfg(windows)]
     {
         let _ = (title, body);
     }

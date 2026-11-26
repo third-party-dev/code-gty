@@ -1,0 +1,275 @@
+# Builds and tests everything: the VS Code extension (a VSIX per platform, for
+# VS Code, VSCodium and code-server), and the native app for Linux, Alpine,
+# Windows and macOS. Linux and Windows are built in Docker, as locally
+# (Dockerfile); macOS is built on macOS, with Apple's toolchain. Runs on
+# pushes and pull requests, and from release.yml for tags.
+#
+# Artifacts:
+#   vsix                  the eight VSIXes and SHA256SUMS
+#   app-linux-windows     gty-linux-*, gty-alpine-*, gty-win32-*.exe, SHA256SUMS
+#   app-darwin            gty-darwin-{x64,arm64} and their .app.zip, SHA256SUMS
+#
+# macOS signing (optional; without these the app is signed ad hoc):
+#   secrets MACOS_CERTIFICATE (a Developer ID Application .p12, base64) and
+#   MACOS_CERTIFICATE_PASSWORD; and for notarization APPLE_ID,
+#   APPLE_TEAM_ID and APPLE_APP_PASSWORD (an app-specific password).
+
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    secrets:
+      MACOS_CERTIFICATE: { required: false }
+      MACOS_CERTIFICATE_PASSWORD: { required: false }
+      APPLE_ID: { required: false }
+      APPLE_TEAM_ID: { required: false }
+      APPLE_APP_PASSWORD: { required: false }
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  RUST_VERSION: "1.91.1"   # as RUST_IMAGE in the Dockerfile
+
+jobs:
+  # Every Docker test: unit, conformance, the web view in three browsers, VS
+  # Code integration, and the app under Xvfb on Debian and Alpine.
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: docker build --target ci
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: ci
+          outputs: type=local,dest=ci-out
+          cache-from: type=gha,scope=ci
+          cache-to: type=gha,mode=max,scope=ci
+
+  # The VSIXes, the Linux and Windows apps, and the page the macOS app embeds.
+  docker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Source date (reproducible archives)
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+      - name: VSIXes (docker build --target dist)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: dist
+          build-args: |
+            SIDECAR_TARGETS=all
+            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+          outputs: type=local,dest=out/vsix
+          cache-from: type=gha,scope=docker-vsix
+          cache-to: type=gha,mode=max,scope=docker-vsix
+      - name: Linux and Windows apps (docker build --target app-out-linux-windows)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: app-out-linux-windows
+          outputs: type=local,dest=out/app
+          cache-from: |
+            type=gha,scope=docker-app
+            type=gha,scope=docker-vsix
+          cache-to: type=gha,mode=max,scope=docker-app
+      - name: The app's page (docker build --target app-page-out)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: app-page-out
+          outputs: type=local,dest=out/page
+          cache-from: type=gha,scope=docker-vsix
+      - name: Check
+        run: |
+          ls -l out/vsix out/app
+          (cd out/vsix && sha256sum -c SHA256SUMS)
+          (cd out/app && sha256sum -c SHA256SUMS)
+          set -- out/vsix/*.vsix
+          test "$#" = 8
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vsix
+          path: out/vsix/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: app-linux-windows
+          path: out/app/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: app-page
+          path: out/page/
+          if-no-files-found: error
+          retention-days: 1
+
+  # The macOS app, on macOS: both architectures from an Apple Silicon runner.
+  macos:
+    needs: docker
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: app-page
+          path: .
+      - name: Rust ${{ env.RUST_VERSION }}
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --component clippy \
+            --target aarch64-apple-darwin --target x86_64-apple-darwin
+          rustup default "$RUST_VERSION"
+      - name: Lint and build
+        working-directory: app
+        run: |
+          for triple in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo clippy --locked --release --target "$triple" -- -D warnings
+            cargo build --locked --release --target "$triple"
+          done
+      - name: Smoke test (the binary starts and runs a shell in a PTY)
+        working-directory: app
+        run: |
+          arm=target/aarch64-apple-darwin/release/gty
+          intel=target/x86_64-apple-darwin/release/gty
+          "$arm" --version
+          "$arm" --selftest
+          if arch -x86_64 /usr/bin/true 2>/dev/null; then   # Rosetta
+            arch -x86_64 "$intel" --version
+            arch -x86_64 "$intel" --selftest
+          else
+            echo "no Rosetta on this runner: x86_64 not run"
+          fi
+      - name: Bundle, sign and (with the secrets) notarize
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -eu
+          mkdir -p out
+          identity=-
+          if [ -n "$MACOS_CERTIFICATE" ]; then
+            keychain="$RUNNER_TEMP/signing.keychain-db"
+            password=$(openssl rand -hex 16)
+            echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+            security create-keychain -p "$password" "$keychain"
+            security set-keychain-settings -lut 3600 "$keychain"
+            security unlock-keychain -p "$password" "$keychain"
+            security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+            security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
+            security list-keychains -d user -s "$keychain" "$HOME/Library/Keychains/login.keychain-db"
+            rm "$RUNNER_TEMP/cert.p12"
+            identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' | head -n 1)
+            test -n "$identity"
+            echo "signing with: $identity"
+          else
+            echo "no MACOS_CERTIFICATE: signing ad hoc (not notarized)"
+          fi
+          for arch in arm64 x64; do
+            case $arch in arm64) triple=aarch64-apple-darwin ;; x64) triple=x86_64-apple-darwin ;; esac
+            bin="out/gty-darwin-$arch"
+            cp "app/target/$triple/release/gty" "$bin"
+            app/macos-app.sh "$bin" "out/$arch/gty.app"
+            if [ "$identity" = - ]; then
+              codesign --force --sign - "$bin"
+              codesign --force --sign - "out/$arch/gty.app"
+            else
+              codesign --force --options runtime --timestamp --sign "$identity" "$bin"
+              codesign --force --options runtime --timestamp --sign "$identity" "out/$arch/gty.app"
+            fi
+            codesign --verify --strict --verbose=2 "out/$arch/gty.app"
+            ditto -c -k --keepParent "out/$arch/gty.app" "out/gty-darwin-$arch.app.zip"
+            if [ "$identity" != - ] && [ -n "$APPLE_ID" ]; then
+              xcrun notarytool submit "out/gty-darwin-$arch.app.zip" --apple-id "$APPLE_ID" \
+                --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+              xcrun stapler staple "out/$arch/gty.app"
+              rm "out/gty-darwin-$arch.app.zip"
+              ditto -c -k --keepParent "out/$arch/gty.app" "out/gty-darwin-$arch.app.zip"
+              spctl --assess --type execute --verbose=2 "out/$arch/gty.app"
+            fi
+            rm -rf "out/$arch"
+          done
+          (cd out && shasum -a 256 gty-darwin-* > SHA256SUMS && cat SHA256SUMS)
+      - name: Remove the signing keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: app-darwin
+          path: out/
+          if-no-files-found: error
+
+  # The Windows exes on Windows: they start, and run cmd.exe in a ConPTY.
+  # (Docker can only build them.) arm64 runners are free for public
+  # repositories only.
+  windows:
+    needs: docker
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(github.event.repository.private
+          && '[{"arch":"x64","runner":"windows-2025"}]'
+          || '[{"arch":"x64","runner":"windows-2025"},{"arch":"arm64","runner":"windows-11-arm"}]') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: app-linux-windows
+          path: app
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          # A GUI-subsystem exe: Start-Process waits for it and keeps its output.
+          $exe = "app\gty-win32-${{ matrix.arch }}.exe"
+          foreach ($arg in @('--version', '--selftest')) {
+            $p = Start-Process -FilePath $exe -ArgumentList $arg -Wait -NoNewWindow -PassThru `
+              -RedirectStandardOutput out.txt -RedirectStandardError err.txt
+            Get-Content out.txt, err.txt
+            if ($p.ExitCode -ne 0) { throw "$exe $arg exited $($p.ExitCode)" }
+          }
+
+  # The arm64 Linux app end to end on a real arm64 machine (Docker runs it
+  # only under qemu, and only --selftest): the window, the web view, typing
+  # and the clipboard, under Xvfb.
+  linux-arm64:
+    needs: docker
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: app-linux-windows
+          path: app-out
+      - name: Install WebKitGTK and the test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-0 python3 xvfb xauth \
+            xdotool xclip imagemagick fonts-dejavu-core
+          sudo install -m 755 app-out/gty-linux-arm64 /usr/local/bin/gty
+      - name: The app under Xvfb, from memory and from the cache
+        run: |
+          OUT="$RUNNER_TEMP/out" xvfb-run -a -s "-screen 0 1280x800x24" app/test/run.sh
+          OUT="$RUNNER_TEMP/out-cache" GTY_NO_MEMFD=1 xvfb-run -a -s "-screen 0 1280x800x24" app/test/run.sh

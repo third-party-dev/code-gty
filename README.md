@@ -49,6 +49,10 @@ docker build --target vt-wasm-out --output type=local,dest=extension/media .
 
 # Try it in a browser at http://localhost:8080
 docker compose up dev
+
+# The native app (app/README.md) for every platform, into ./dist/app: Linux,
+# Alpine and Windows, and macOS cross-built with Apple's SDK (development only)
+docker build --target app-out --output type=local,dest=dist/app .
 ```
 
 Individual test stages can be built on their own, for example `docker build --target test-webview .`. The integration stage tests against VS Code 1.90.0 (the minimum supported version) by default; use `--build-arg VSCODE_TEST_VERSION=stable` for the latest.
@@ -67,7 +71,30 @@ npm run test:unit && npm run test:conformance
 
 Then press F5 from the `extension` folder, or start VS Code with `--extensionDevelopmentPath=extension`. Without a packaged `bin/` folder, the extension falls back to `../sidecar/target/{release,debug}/gty-sidecar` and logs that the binary is unverified.
 
-## Release
+## Continuous integration and releases
+
+GitHub Actions builds and tests everything on each push to `main` and each pull request ([.github/workflows/build.yml](.github/workflows/build.yml)):
+
+| Job | Runs on | Does |
+|---|---|---|
+| `test` | Ubuntu | `docker build --target ci` (every container test above) |
+| `docker` | Ubuntu | the eight VSIXes (`dist`, every platform), the Linux and Windows apps (`app-out-linux-windows`), and the page the macOS app embeds |
+| `macos` | macOS (Apple Silicon) | the macOS app for arm64 and x64 with Apple's toolchain: clippy, `--selftest`, the `.app` bundle, signing and notarization when the signing secrets are set (ad hoc otherwise) |
+| `windows` | Windows x64 and arm64 | the Windows exes start and run `cmd.exe` in a ConPTY |
+| `linux-arm64` | Ubuntu on arm64 | `gty-linux-arm64` end to end under Xvfb (window, typing, clipboard) |
+
+The arm64 runners are free for public repositories only, so a private repository runs the x64 jobs alone.
+
+A tag `vX.Y.Z` matching `extension/package.json` runs [.github/workflows/release.yml](.github/workflows/release.yml): the whole build, then a **draft** GitHub release with every VSIX and app file and a combined `SHA256SUMS`, then publishing to the VS Code Marketplace (`VSCE_PAT`, for VS Code) and Open VSX (`OVSX_PAT`, for VSCodium, code-server and Coder). Publishing runs in the `marketplace` environment, so required reviewers can be added to approve it.
+
+| Secret | For |
+|---|---|
+| `VSCE_PAT` | VS Code Marketplace (skipped when unset) |
+| `OVSX_PAT` | Open VSX (skipped when unset) |
+| `MACOS_CERTIFICATE`, `MACOS_CERTIFICATE_PASSWORD` | a Developer ID Application certificate (`.p12`, base64) to sign the macOS app |
+| `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` | notarizing it (an app-specific password) |
+
+Publishing from a local machine still works, with the same files:
 
 ```sh
 docker build --target release \

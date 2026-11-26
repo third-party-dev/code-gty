@@ -5,6 +5,10 @@
 #   docker build --target dist --output type=local,dest=dist .        # VSIXes + SHA256SUMS
 #   docker build --target ci .                                         # all container tests
 #   docker build --target dist --build-arg SIDECAR_TARGETS=all ...     # every platform
+#   docker build --target app-out --output type=local,dest=dist/app .  # the native app, every platform
+#
+# Releases are built by GitHub Actions (.github/workflows/), from these same
+# stages, except macOS, which they build on macOS.
 #
 # Base images are pinned by digest; bump them deliberately.
 
@@ -12,6 +16,10 @@ ARG NODE_IMAGE=node:22.22.0-bookworm-slim@sha256:dd9d21971ec4395903fa6143c2b9267
 ARG RUST_IMAGE=rust:1.91.1-bookworm@sha256:c1e5f19e773b7878c3f7a805dd00a495e747acbdc76fb2337a4ebf0418896b33
 ARG PLAYWRIGHT_IMAGE=mcr.microsoft.com/playwright:v1.56.1-noble@sha256:f1e7e01021efd65dd1a2c56064be399f3e4de00fd021ac561325f2bfbb2b837a
 ARG DEBIAN_IMAGE=debian:bookworm-slim@sha256:e67eeead736ff7bbe258ef088bff683635c561b1fcfefad0806c1df4ab49ce0e
+# cargo-zigbuild's own image: Rust, Zig and Apple's macOS SDK (SDKROOT), for
+# the macOS app (development builds; releases are built on macOS by GitHub
+# Actions, .github/workflows/build.yml).
+ARG ZIGBUILD_IMAGE=ghcr.io/rust-cross/cargo-zigbuild:0.24.1@sha256:3abe26afb5537ea225c223c6790c1bf056271ef51ea52d2c4e343c569c8f129a
 ARG ALPINE_IMAGE=alpine:3.22@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f
 
 # ---------------------------------------------------------------------------
@@ -147,7 +155,7 @@ FROM scratch AS app-src
 COPY sidecar/ /src/sidecar/
 COPY app/Cargo.toml app/Cargo.lock app/build.rs /src/app/
 COPY app/src /src/app/src
-COPY app/gty.sh app/pack.sh app/pe-imports.py /src/app/
+COPY app/gty.sh app/pack.sh app/pe-imports.py app/macho-info.py app/macos-app.sh /src/app/
 COPY extension/shell-integration /src/extension/shell-integration
 COPY --from=webview /src/extension/media /src/extension/media
 COPY --from=webview /src/app/assets /src/app/assets
@@ -225,7 +233,27 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cross.sh win32-x64 build && mv /out/gty.exe /out/gty-win32-x64.exe \
  && cross.sh win32-arm64 build && mv /out/gty.exe /out/gty-win32-arm64.exe
 
-FROM ${DEBIAN_IMAGE} AS app-pack
+# darwin-x64, darwin-arm64: Zig and Apple's SDK from the cargo-zigbuild image,
+# with the same Rust as the other builds. Each is the binary and a zipped
+# gty.app, signed ad hoc (by Zig's linker); not notarized.
+FROM ${ZIGBUILD_IMAGE} AS app-darwin
+ARG RUST_VERSION=1.91.1
+RUN rustup toolchain install ${RUST_VERSION} --profile minimal --component clippy \
+      --target x86_64-apple-darwin --target aarch64-apple-darwin \
+ && rustup default ${RUST_VERSION} \
+ && (command -v python3 || (apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*))
+COPY app/cross.sh /usr/local/bin/
+ARG BUILD_ID=0.1.0
+ENV GTY_BUILD_ID=${BUILD_ID} CARGO_INCREMENTAL=0 \
+    RUSTFLAGS="--remap-path-prefix=/src=. --remap-path-prefix=/usr/local/cargo=cargo"
+COPY --from=app-src /src /src
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    for a in x64 arm64; do \
+      cross.sh darwin-$a build && mv /out/gty /out/gty-darwin-$a && mv /out/gty.app.zip /out/gty-darwin-$a.app.zip || exit 1; \
+    done; ls -l /out
+
+# Linux and Windows (GitHub Actions builds macOS on macOS).
+FROM ${DEBIAN_IMAGE} AS app-pack-linux-windows
 COPY --from=app-build /out/gty-linux-x64 /out/
 COPY --from=app-linux-arm64 /out/gty-linux-arm64 /out/
 COPY --from=app-linux-armhf /out/gty-linux-armhf /out/
@@ -234,8 +262,22 @@ COPY --from=app-alpine-arm64 /out/gty-alpine-arm64 /out/
 COPY --from=app-win32 /out/gty-win32-x64.exe /out/gty-win32-arm64.exe /out/
 RUN cd /out && sha256sum gty-* > SHA256SUMS && ls -l && cat SHA256SUMS
 
+FROM scratch AS app-out-linux-windows
+COPY --from=app-pack-linux-windows /out/ /
+
+# Everything, macOS (cross-built with Apple's SDK) included: for development.
+FROM app-pack-linux-windows AS app-pack
+COPY --from=app-darwin /out/gty-darwin-x64 /out/gty-darwin-x64.app.zip /out/gty-darwin-arm64 /out/gty-darwin-arm64.app.zip /out/
+RUN cd /out && sha256sum gty-* > SHA256SUMS && ls -l && cat SHA256SUMS
+
 FROM scratch AS app-out
 COPY --from=app-pack /out/ /
+
+# The page the app embeds (extension/media and app/assets), for building the
+# app outside Docker (the macOS job in .github/workflows/build.yml).
+FROM scratch AS app-page-out
+COPY --from=webview /src/extension/media /extension/media
+COPY --from=webview /src/app/assets /app/assets
 
 # The launcher where WebKitGTK is missing: it names the packages and exits
 # 127, both from the cache (no Python) and from memory; and it says which
@@ -400,7 +442,7 @@ COPY --from=test-app /tmp/app-ok /ok/
 COPY --from=test-app-deps /tmp/app-deps-ok /ok/
 COPY --from=test-app-deps-alpine /tmp/app-deps-alpine-ok /ok/
 COPY --from=test-app-alpine /tmp/app-alpine-ok /ok/
-COPY --from=app-pack /out/SHA256SUMS /ok/app-SHA256SUMS
+COPY --from=app-pack-linux-windows /out/SHA256SUMS /ok/app-SHA256SUMS
 COPY --from=package /dist/SHA256SUMS /ok/
 
 # ---------------------------------------------------------------------------

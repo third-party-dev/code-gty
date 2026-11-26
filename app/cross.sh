@@ -8,6 +8,9 @@
 #   alpine-x64                   on Alpine, natively
 #   alpine-arm64                 on Alpine: an aarch64 Alpine sysroot and clang;
 #                                tested under qemu-user
+#   darwin-x64, darwin-arm64     with Zig and Apple's macOS SDK (the cargo-zigbuild
+#                                image, SDKROOT); for development: releases are
+#                                built on macOS by GitHub Actions
 #   win32-x64, win32-arm64       with Zig (cargo-zigbuild, as the sidecar);
 #                                WebView2 is part of Windows, so no libraries
 # linux-x64 is the Dockerfile's app-build stage (native, with clippy).
@@ -19,6 +22,8 @@ case $platform in
     linux-armhf) os=debian deb=armhf gnu=arm-linux-gnueabihf triple=armv7-unknown-linux-gnueabihf qemu=qemu-arm ;;
     alpine-x64) os=alpine triple=x86_64-unknown-linux-musl qemu= ;;
     alpine-arm64) os=alpine apkarch=aarch64 triple=aarch64-unknown-linux-musl qemu=qemu-aarch64 ;;
+    darwin-x64) os=darwin triple=x86_64-apple-darwin ;;
+    darwin-arm64) os=darwin triple=aarch64-apple-darwin ;;
     win32-x64) os=windows triple=x86_64-pc-windows-gnu ;;
     win32-arm64) os=windows triple=aarch64-pc-windows-gnullvm ;;
     *) echo "cross.sh: unknown platform $platform" >&2; exit 2 ;;
@@ -72,8 +77,8 @@ EOF
             fi
             rustup target add "$triple"
             ;;
-        windows)
-            ;; # rust-base has Zig, cargo-zigbuild and the targets
+        windows | darwin)
+            ;; # the image has Zig, cargo-zigbuild and the targets
     esac
 }
 
@@ -117,6 +122,14 @@ print(next(p["manifest_path"] for p in json.load(sys.stdin)["packages"] if p["na
             cargo clippy --locked --release --target "$triple" -- -D warnings
             cargo zigbuild --locked --release --target "$triple"
             ;;
+        darwin)
+            # The frameworks (AppKit, WebKit, ...) are linked from $SDKROOT.
+            # No clippy here: a plain `cargo clippy` would compile objc2's
+            # Objective-C helper with the host's cc, not Zig. The macOS job in
+            # GitHub Actions lints with Apple's toolchain.
+            export MACOSX_DEPLOYMENT_TARGET=11.0
+            cargo zigbuild --locked --release --target "$triple"
+            ;;
     esac
     mkdir -p /out
     cp "target/$triple/release/$exe" "/out/$exe"
@@ -128,6 +141,27 @@ print(next(p["manifest_path"] for p in json.load(sys.stdin)["packages"] if p["na
     case $os in
         debian) run="$qemu -L /" ;;
         alpine) run=${qemu:+$qemu -L /sysroot} ;;
+        darwin)
+            # No Mac here: check what it links, and that it is signed (Zig's
+            # linker signs ad hoc; Apple Silicon runs nothing unsigned).
+            python3 /src/app/macho-info.py "/out/$exe" --require-signature
+            /src/app/macos-app.sh "/out/$exe" "/out/gty.app"
+            # Zipped with the files' modes (the binary must stay executable).
+            python3 -c '
+import os, sys, zipfile
+src, dst = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(dst, "w") as z:
+    for root, _, files in sorted(os.walk(src)):
+        for name in sorted(files):
+            path = os.path.join(root, name)
+            info = zipfile.ZipInfo(os.path.relpath(path, os.path.dirname(src)), (1980, 1, 1, 0, 0, 0))
+            info.external_attr = (os.stat(path).st_mode & 0xFFFF) << 16
+            info.compress_type = zipfile.ZIP_DEFLATED
+            with open(path, "rb") as f:
+                z.writestr(info, f.read())
+' /out/gty.app /out/gty.app.zip
+            rm -rf /out/gty.app
+            return ;;
         windows)
             # No emulator here. It must be one file: only Windows' own DLLs
             # (no WebView2Loader.dll to ship beside it; WebView2 itself is
