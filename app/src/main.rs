@@ -9,9 +9,14 @@
 //!   page (WebSocket) --> bridge.rs --> daemon socket --> PTYs
 //!   page (window.ipc) --> here: title, clipboard, links, notifications, close
 
+// A GUI program on Windows: no console window when started from Explorer.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod assets;
 mod bridge;
 mod daemon;
+#[cfg(all(windows, target_env = "gnu"))]
+mod webview2_loader;
 
 use serde::Deserialize;
 use std::borrow::Cow;
@@ -128,6 +133,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let unpacked = dir.join(format!("gty-{VERSION}-{}", gty_sidecar::BUILD_ID));
     let vt = unpacked.join("ghostty-vt.wasm");
     daemon::write_once(&vt, assets::VT_WASM)?;
+    #[cfg(all(windows, target_env = "gnu"))]
+    webview2_loader::set_dir(unpacked.clone());
     let shell_integration = unpacked.join("shell-integration");
     for (name, data) in assets::SHELL_INTEGRATION {
         daemon::write_once(&shell_integration.join(name), data)?;

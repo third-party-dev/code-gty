@@ -135,10 +135,24 @@ RUN set -eux; \
 
 # ---------------------------------------------------------------------------
 # Native app (app/): the terminal page in the system web view, linked with
-# the sidecar. Linux build here, against WebKitGTK 4.1 (a system library at
-# run time: libwebkit2gtk-4.1-0).
+# the sidecar, for VS Code's platforms except macOS (which needs Apple's
+# SDK). Linux and Alpine builds link WebKitGTK 4.1 (a system library at run
+# time) and are each packed into one file, gty-<platform>: the launcher
+# script (app/gty.sh) with the app appended, which runs it from memory after
+# checking for the libraries. Windows builds are gty-win32-<arch>.exe
+# (WebView2 is part of Windows).
 #   docker build --target app-out --output type=local,dest=dist/app .
 # ---------------------------------------------------------------------------
+FROM scratch AS app-src
+COPY sidecar/ /src/sidecar/
+COPY app/Cargo.toml app/Cargo.lock app/build.rs /src/app/
+COPY app/src /src/app/src
+COPY app/gty.sh app/pack.sh app/pe-imports.py /src/app/
+COPY extension/shell-integration /src/extension/shell-integration
+COPY --from=webview /src/extension/media /src/extension/media
+COPY --from=webview /src/app/assets /src/app/assets
+
+# linux-x64: native, with clippy.
 FROM ${RUST_IMAGE} AS app-build
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev \
@@ -147,41 +161,110 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ARG BUILD_ID=0.1.0
 ENV GTY_BUILD_ID=${BUILD_ID} CARGO_INCREMENTAL=0 \
     RUSTFLAGS="--remap-path-prefix=/src=. --remap-path-prefix=/usr/local/cargo=cargo"
-WORKDIR /src
-COPY sidecar/ sidecar/
-COPY app/Cargo.toml app/Cargo.lock app/
-COPY app/src app/src
-COPY extension/shell-integration extension/shell-integration
-COPY --from=webview /src/extension/media extension/media
-COPY --from=webview /src/app/assets app/assets
+COPY --from=app-src /src /src
 WORKDIR /src/app
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    cargo clippy --locked --release -- -D warnings \
+    sh -n gty.sh \
+ && cargo clippy --locked --release -- -D warnings \
  && cargo build --locked --release \
- && mkdir -p /out && cp target/release/gty /out/gty \
- && ls -l /out/gty && ldd /out/gty | grep -E 'webkit|gtk|soup|javascriptcore'
+ && mkdir -p /out && cp target/release/gty /out/gty && rm -rf target \
+ && ldd /out/gty | grep -E 'webkit|gtk|soup|javascriptcore' \
+ && ./pack.sh /out/gty /out/gty-linux-x64 linux-x64 && ls -l /out
 
-# The one-file gty: the launcher script (app/gty.sh) with the app appended,
-# gzipped. It runs the app from memory (or from ~/.cache/gty/bin without Python),
-# after checking for the system libraries and saying how to install them.
+# linux-arm64, linux-armhf: Debian multiarch WebKitGTK and a cross gcc.
+FROM ${RUST_IMAGE} AS app-cross-debian
+COPY app/cross.sh /usr/local/bin/
+ARG BUILD_ID=0.1.0
+ENV GTY_BUILD_ID=${BUILD_ID} CARGO_INCREMENTAL=0 \
+    RUSTFLAGS="--remap-path-prefix=/src=. --remap-path-prefix=/usr/local/cargo=cargo"
+
+FROM app-cross-debian AS app-linux-arm64
+RUN cross.sh linux-arm64 setup
+COPY --from=app-src /src /src
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    cross.sh linux-arm64 build && /src/app/pack.sh /out/gty /out/gty-linux-arm64 linux-arm64
+
+FROM app-cross-debian AS app-linux-armhf
+RUN cross.sh linux-armhf setup
+COPY --from=app-src /src /src
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    cross.sh linux-armhf build && /src/app/pack.sh /out/gty /out/gty-linux-armhf linux-armhf
+
+# alpine-x64 (native), alpine-arm64 (an aarch64 Alpine sysroot and clang).
+FROM ${ALPINE_IMAGE} AS app-cross-alpine
+ARG RUST_VERSION=1.91.1
+RUN apk add --no-cache build-base binutils gzip pkgconf clang lld qemu-aarch64 rustup \
+      webkit2gtk-4.1-dev gtk+3.0-dev libsoup3-dev \
+ && rustup-init -y --profile minimal --default-toolchain ${RUST_VERSION}
+ENV PATH=/root/.cargo/bin:$PATH
+COPY app/cross.sh /usr/local/bin/
+ARG BUILD_ID=0.1.0
+ENV GTY_BUILD_ID=${BUILD_ID} CARGO_INCREMENTAL=0 \
+    RUSTFLAGS="--remap-path-prefix=/src=. --remap-path-prefix=/root/.cargo=cargo"
+
+FROM app-cross-alpine AS app-alpine-x64
+RUN cross.sh alpine-x64 setup
+COPY --from=app-src /src /src
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    cross.sh alpine-x64 build && /src/app/pack.sh /out/gty /out/gty-alpine-x64 alpine-x64
+
+FROM app-cross-alpine AS app-alpine-arm64
+RUN cross.sh alpine-arm64 setup
+COPY --from=app-src /src /src
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    cross.sh alpine-arm64 build && /src/app/pack.sh /out/gty /out/gty-alpine-arm64 alpine-arm64
+
+# win32-x64, win32-arm64: Zig, as the sidecar.
+FROM rust-base AS app-win32
+COPY app/cross.sh /usr/local/bin/
+ARG BUILD_ID=0.1.0
+ENV GTY_BUILD_ID=${BUILD_ID} CARGO_INCREMENTAL=0 \
+    RUSTFLAGS="--remap-path-prefix=/src=. --remap-path-prefix=/usr/local/cargo=cargo"
+COPY --from=app-src /src /src
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    cross.sh win32-x64 build && mv /out/gty.exe /out/gty-win32-x64.exe \
+ && cross.sh win32-arm64 build && mv /out/gty.exe /out/gty-win32-arm64.exe
+
 FROM ${DEBIAN_IMAGE} AS app-pack
-COPY --from=app-build /out/gty /in/gty
-COPY app/gty.sh app/pack.sh /src/
-RUN sh -n /src/gty.sh && mkdir -p /out && /src/pack.sh /in/gty /out/gty && ls -l /out/gty
+COPY --from=app-build /out/gty-linux-x64 /out/
+COPY --from=app-linux-arm64 /out/gty-linux-arm64 /out/
+COPY --from=app-linux-armhf /out/gty-linux-armhf /out/
+COPY --from=app-alpine-x64 /out/gty-alpine-x64 /out/
+COPY --from=app-alpine-arm64 /out/gty-alpine-arm64 /out/
+COPY --from=app-win32 /out/gty-win32-x64.exe /out/gty-win32-arm64.exe /out/
+RUN cd /out && sha256sum gty-* > SHA256SUMS && ls -l && cat SHA256SUMS
 
 FROM scratch AS app-out
-COPY --from=app-pack /out/gty /
+COPY --from=app-pack /out/ /
 
 # The launcher where WebKitGTK is missing: it names the packages and exits
-# 127, both from the cache (no Python here) and from memory.
+# 127, both from the cache (no Python) and from memory; and it says which
+# build to use on the wrong C library or machine.
 FROM ${DEBIAN_IMAGE} AS test-app-deps
-COPY --from=app-out /gty /usr/local/bin/gty
+COPY --from=app-build /out/gty-linux-x64 /usr/local/bin/gty
+COPY --from=app-alpine-x64 /out/gty-alpine-x64 /usr/local/bin/
+COPY --from=app-linux-arm64 /out/gty-linux-arm64 /usr/local/bin/
 COPY app/test/deps.sh /test/deps.sh
-RUN /test/deps.sh cache \
- && apt-get update && apt-get install -y --no-install-recommends python3-minimal \
- && rm -rf /var/lib/apt/lists/* "$HOME/.cache/gty" \
- && /test/deps.sh memory \
- && touch /tmp/app-deps-ok
+RUN set -e; debian='libwebkit2gtk-4.1.so.0'; \
+    /test/deps.sh gty cache "$debian" 'sudo apt install.* libwebkit2gtk-4.1-0' 'sudo dnf install.* webkit2gtk4.1' \
+      'sudo pacman -S --needed.* webkit2gtk-4.1' 'sudo zypper install.* libwebkit2gtk-4_1-0'; \
+    apt-get update && apt-get install -y --no-install-recommends python3-minimal && rm -rf /var/lib/apt/lists/*; \
+    rm -rf "$HOME/.cache/gty"; \
+    /test/deps.sh gty memory "$debian" 'sudo apt install.* libwebkit2gtk-4.1-0'; \
+    /test/deps.sh gty-alpine-x64 wrong 'for Alpine and other musl systems.*needs gty-linux-x64'; \
+    /test/deps.sh gty-linux-arm64 wrong 'for aarch64 machines, and this one is x86_64'; \
+    touch /tmp/app-deps-ok
+
+FROM ${ALPINE_IMAGE} AS test-app-deps-alpine
+COPY --from=app-alpine-x64 /out/gty-alpine-x64 /usr/local/bin/gty
+COPY --from=app-build /out/gty-linux-x64 /usr/local/bin/
+COPY app/test/deps.sh /test/deps.sh
+RUN set -e; \
+    /test/deps.sh gty cache 'libwebkit2gtk-4.1.so.0' 'apk add.* webkit2gtk-4.1'; \
+    apk add --no-cache python3; rm -rf "$HOME/.cache/gty"; \
+    /test/deps.sh gty memory 'libwebkit2gtk-4.1.so.0' 'apk add.* webkit2gtk-4.1'; \
+    /test/deps.sh gty-linux-x64 wrong 'for glibc systems; this one uses musl (Alpine), so it needs gty-alpine-x64'; \
+    touch /tmp/app-deps-alpine-ok
 
 # The real app under Xvfb: page, web view, bridge, daemon and a PTY. Run
 # from memory, then from the cache.
@@ -189,7 +272,7 @@ FROM ${DEBIAN_IMAGE} AS test-app
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libwebkit2gtk-4.1-0 python3-minimal xvfb xauth xdotool imagemagick fonts-dejavu-core procps \
  && rm -rf /var/lib/apt/lists/*
-COPY --from=app-out /gty /usr/local/bin/gty
+COPY --from=app-build /out/gty-linux-x64 /usr/local/bin/gty
 COPY app/test/run.sh /test/run.sh
 RUN useradd -m tester
 USER tester
@@ -198,6 +281,19 @@ RUN OUT=/tmp/out xvfb-run -a -s "-screen 0 1280x800x24" /test/run.sh \
  && OUT=/tmp/out-cache GTY_NO_MEMFD=1 xvfb-run -a -s "-screen 0 1280x800x24" /test/run.sh \
  && ls "$HOME"/.cache/gty/bin/gty-* \
  && touch /tmp/app-ok
+
+# The same on Alpine, with the musl build.
+FROM ${ALPINE_IMAGE} AS test-app-alpine
+RUN apk add --no-cache webkit2gtk-4.1 python3 xvfb-run xdotool imagemagick font-dejavu procps-ng coreutils
+COPY --from=app-alpine-x64 /out/gty-alpine-x64 /usr/local/bin/gty
+COPY app/test/run.sh /test/run.sh
+RUN adduser -D tester
+USER tester
+RUN OUT=/tmp/out xvfb-run -a -s "-screen 0 1280x800x24" /test/run.sh \
+ && test ! -e "$HOME/.cache/gty/bin" \
+ && OUT=/tmp/out-cache GTY_NO_MEMFD=1 xvfb-run -a -s "-screen 0 1280x800x24" /test/run.sh \
+ && ls "$HOME"/.cache/gty/bin/gty-* \
+ && touch /tmp/app-alpine-ok
 
 FROM scratch AS test-app-out
 COPY --from=test-app /tmp/out /
@@ -302,6 +398,9 @@ COPY --from=test-webview /webview-ok /ok/
 COPY --from=test-integration /tmp/integration-ok /ok/
 COPY --from=test-app /tmp/app-ok /ok/
 COPY --from=test-app-deps /tmp/app-deps-ok /ok/
+COPY --from=test-app-deps-alpine /tmp/app-deps-alpine-ok /ok/
+COPY --from=test-app-alpine /tmp/app-alpine-ok /ok/
+COPY --from=app-pack /out/SHA256SUMS /ok/app-SHA256SUMS
 COPY --from=package /dist/SHA256SUMS /ok/
 
 # ---------------------------------------------------------------------------

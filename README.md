@@ -12,7 +12,7 @@ A VS Code extension that shows a Ghostty-emulated terminal in an editor tab. It 
 | `extension/src/core/` | Shared by the extension and the native app, free of `vscode` and Node: the per-tab session (`session.ts`), the sidecar protocol client over any transport, settings to page config, and the `Platform`/`TerminalView` interfaces each host implements |
 | `extension/src/` | Extension host (TypeScript): the VS Code platform and panel view, manager, settings, environment, profiles, links, clipboard, serializer, exported API |
 | `extension/native/` | The native app's page host: the core session with a window view, a native platform and the daemon over a WebSocket (bundled to `app/assets/app.js`) |
-| `app/` | [`gty`](app/README.md), the terminal as a desktop app (Rust: tao + wry, the sidecar linked in as its daemon) |
+| `app/` | [`gty`](app/README.md), the terminal as a desktop app (Rust: tao + wry, the sidecar linked in as its daemon), one file per platform: Linux (x64, arm64, armhf) and Alpine (x64, arm64) as self-launching scripts, Windows (x64, arm64) as exes |
 | `extension/src/shared/` | Code used by both the host and the webview: message schema and validation, key pass-through, paste preparation |
 | `extension/term/` | gty-term: the browser terminal on a mirror engine: canvas renderer, sprites, keyboard/IME, mouse, selection, find, links, images |
 | `extension/webview/` | Webview glue (bundled to `media/webview.js`): messages, settings, pass-through keys, clipboard |

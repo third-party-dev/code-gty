@@ -1,5 +1,6 @@
 #!/bin/sh
-# gty: code-gty's terminal as a desktop app, in one file. This script is
+# gty-@PLATFORM@: code-gty's terminal as a desktop app, in one file, for
+# @PLATFORM@ (@LIBC@ systems; uname -m: @ARCHES@). This script is
 # followed by the app itself, gzipped (the build appends it after the last
 # line). The script runs the app from memory: Python's os.memfd_create gives
 # an anonymous in-memory file, which can be executed, so nothing is written
@@ -16,7 +17,10 @@
 #   GTY_SKIP_CHECK=1     skip the library check
 #   GTY_NO_MEMFD=1       always run from ~/.cache/gty/bin
 
-GTY_ARCH=@ARCH@
+GTY_PLATFORM=@PLATFORM@
+GTY_ARCHES="@ARCHES@"
+GTY_LIBC=@LIBC@
+GTY_LOADER=@LOADER@
 GTY_ID=@ID@
 GTY_LINE=@LINE@
 
@@ -28,22 +32,30 @@ die() {
 }
 
 # The packages that provide a library the app links against (directly or
-# through another library): "apt|dnf|pacman|zypper".
+# through another library): "apt|dnf|pacman|zypper|apk".
 packages() {
     case $1 in
-        libwebkit2gtk-4.1.so.*) echo "libwebkit2gtk-4.1-0|webkit2gtk4.1|webkit2gtk-4.1|libwebkit2gtk-4_1-0" ;;
-        libjavascriptcoregtk-4.1.so.*) echo "libjavascriptcoregtk-4.1-0|javascriptcoregtk4.1|webkit2gtk-4.1|libjavascriptcoregtk-4_1-0" ;;
-        libsoup-3.0.so.*) echo "libsoup-3.0-0|libsoup3|libsoup3|libsoup-3_0-0" ;;
-        libgtk-3.so.* | libgdk-3.so.*) echo "libgtk-3-0|gtk3|gtk3|libgtk-3-0" ;;
-        libcairo.so.*) echo "libcairo2|cairo|cairo|libcairo2" ;;
-        libgdk_pixbuf-2.0.so.*) echo "libgdk-pixbuf-2.0-0|gdk-pixbuf2|gdk-pixbuf2|libgdk_pixbuf-2_0-0" ;;
-        libglib-2.0.so.*) echo "libglib2.0-0|glib2|glib2|libglib-2_0-0" ;;
-        libgobject-2.0.so.*) echo "libglib2.0-0|glib2|glib2|libgobject-2_0-0" ;;
-        libgio-2.0.so.*) echo "libglib2.0-0|glib2|glib2|libgio-2_0-0" ;;
-        libdbus-1.so.*) echo "libdbus-1-3|dbus-libs|dbus|libdbus-1-3" ;;
-        libgcc_s.so.*) echo "libgcc-s1|libgcc|gcc-libs|libgcc_s1" ;;
+        libwebkit2gtk-4.1.so.*) echo "libwebkit2gtk-4.1-0|webkit2gtk4.1|webkit2gtk-4.1|libwebkit2gtk-4_1-0|webkit2gtk-4.1" ;;
+        libjavascriptcoregtk-4.1.so.*) echo "libjavascriptcoregtk-4.1-0|javascriptcoregtk4.1|webkit2gtk-4.1|libjavascriptcoregtk-4_1-0|webkit2gtk-4.1" ;;
+        libsoup-3.0.so.*) echo "libsoup-3.0-0|libsoup3|libsoup3|libsoup-3_0-0|libsoup3" ;;
+        libgtk-3.so.* | libgdk-3.so.*) echo "libgtk-3-0|gtk3|gtk3|libgtk-3-0|gtk+3.0" ;;
+        libcairo.so.*) echo "libcairo2|cairo|cairo|libcairo2|cairo" ;;
+        libgdk_pixbuf-2.0.so.*) echo "libgdk-pixbuf-2.0-0|gdk-pixbuf2|gdk-pixbuf2|libgdk_pixbuf-2_0-0|gdk-pixbuf" ;;
+        libglib-2.0.so.*) echo "libglib2.0-0|glib2|glib2|libglib-2_0-0|glib" ;;
+        libgobject-2.0.so.*) echo "libglib2.0-0|glib2|glib2|libgobject-2_0-0|glib" ;;
+        libgio-2.0.so.*) echo "libglib2.0-0|glib2|glib2|libgio-2_0-0|glib" ;;
+        libdbus-1.so.*) echo "libdbus-1-3|dbus-libs|dbus|libdbus-1-3|dbus-libs" ;;
+        libgcc_s.so.*) echo "libgcc-s1|libgcc|gcc-libs|libgcc_s1|libgcc" ;;
         *) echo "" ;;
     esac
+}
+
+# Whether this system's C library is musl (Alpine) rather than glibc.
+system_libc() {
+    for f in /lib/ld-musl-*.so.1; do
+        [ -e "$f" ] && { echo musl; return; }
+    done
+    echo glibc
 }
 
 # Reads ldd's output for the app ($1). Returns if nothing is missing;
@@ -53,7 +65,10 @@ report() {
     case $out in
         *"not a dynamic executable"*) return 0 ;;
     esac
-    missing=$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]*\([^[:space:]]*\) => not found.*/\1/p' | sort -u)
+    # glibc's ldd: "libfoo.so.1 => not found"; musl's: "Error loading shared
+    # library libfoo.so.1: No such file or directory".
+    missing=$(printf '%s\n' "$out" | sed -n -e 's/^[[:space:]]*\([^[:space:]]*\) => not found.*/\1/p' \
+        -e 's/^Error loading shared library \([^:]*\): No such file.*/\1/p' | sort -u)
     # e.g. "version `GLIBC_2.34' not found": the C library is older than the
     # one the app was built against, which no package install fixes.
     glibc=$(printf '%s\n' "$out" | sed -n "s/.*version [\`']GLIBC_\([0-9.]*\)' not found.*/\1/p" | sort -t. -k1,1n -k2,2n | tail -n 1)
@@ -71,23 +86,28 @@ report() {
             echo "(musl systems, such as Alpine, are not supported)."
         fi
 
-        apt='' dnf='' pacman='' zypper='' unknown=''
+        apt='' dnf='' pacman='' zypper='' apk='' unknown=''
         for lib in $missing; do
             row=$(packages "$lib")
             if [ -z "$row" ]; then
                 unknown="$unknown $lib"
                 continue
             fi
-            IFS='|' read -r a d p z <<EOF
+            IFS='|' read -r a d p z k <<EOF
 $row
 EOF
             case " $apt " in *" $a "*) ;; *) apt="$apt $a" ;; esac
             case " $dnf " in *" $d "*) ;; *) dnf="$dnf $d" ;; esac
             case " $pacman " in *" $p "*) ;; *) pacman="$pacman $p" ;; esac
             case " $zypper " in *" $z "*) ;; *) zypper="$zypper $z" ;; esac
+            case " $apk " in *" $k "*) ;; *) apk="$apk $k" ;; esac
         done
 
-        if [ -n "$apt" ]; then
+        if [ -n "$apt" ] && [ "$GTY_LIBC" = musl ]; then
+            echo
+            echo "Install them with (as root):"
+            echo "    apk add$apk"
+        elif [ -n "$apt" ]; then
             echo
             echo "Install them with your distribution's package manager:"
             echo "    Debian, Ubuntu, Mint:      sudo apt install$apt"
@@ -100,10 +120,14 @@ EOF
             echo "To find the package for the others:"
             for lib in $unknown; do
                 echo "    $lib:"
-                echo "        apt-file search $lib"
-                echo "        dnf provides '*/$lib'"
-                echo "        pacman -F $lib"
-                echo "        zypper search --provides $lib"
+                if [ "$GTY_LIBC" = musl ]; then
+                    echo "        apk search so:$lib"
+                else
+                    echo "        apt-file search $lib"
+                    echo "        dnf provides '*/$lib'"
+                    echo "        pacman -F $lib"
+                    echo "        zypper search --provides $lib"
+                fi
             done
         fi
         echo
@@ -119,7 +143,22 @@ if [ -n "${__GTY_LDD:-}" ]; then
     die "cannot start the app"
 fi
 
-[ "$(uname -m)" = "$GTY_ARCH" ] || die "this gty is for $GTY_ARCH, and this machine is $(uname -m)"
+machine=$(uname -m)
+case " $GTY_ARCHES " in
+    *" $machine "*) ;;
+    *) die "this is gty-$GTY_PLATFORM, for $GTY_ARCHES machines, and this one is $machine" ;;
+esac
+# The app's dynamic loader (its ELF interpreter): missing when this is the
+# wrong C library, or 32-bit ARM on a 64-bit system without armhf libraries.
+if [ ! -e "$GTY_LOADER" ]; then
+    case $GTY_LIBC-$(system_libc)-$GTY_PLATFORM in
+        musl-glibc-*) die "this is gty-$GTY_PLATFORM, for Alpine and other musl systems; this system uses glibc, so it needs gty-linux-${GTY_PLATFORM#*-}" ;;
+        glibc-musl-linux-armhf) die "this is gty-$GTY_PLATFORM, for glibc systems; this one uses musl (Alpine), and there is no Alpine build for armhf" ;;
+        glibc-musl-*) die "this is gty-$GTY_PLATFORM, for glibc systems; this one uses musl (Alpine), so it needs gty-alpine-${GTY_PLATFORM#*-}" ;;
+        glibc-glibc-linux-armhf) die "this is gty-$GTY_PLATFORM, for 32-bit ARM, and this system has no 32-bit ARM C library ($GTY_LOADER); on a 64-bit system, use gty-linux-arm64" ;;
+        *) die "this system has no $GTY_LOADER, the loader gty-$GTY_PLATFORM needs" ;;
+    esac
+fi
 
 memfd=yes
 [ -z "${GTY_NO_MEMFD:-}" ] || memfd=no
@@ -131,9 +170,10 @@ if [ $memfd = yes ]; then
     exec "$python" -I -c "$py" "$0" "$GTY_LINE" "$@"
 fi
 
-# From the cache: unpacked once per build, checked, and old builds removed.
+# From the cache: unpacked once per build, checked, and this platform's old
+# builds removed (an arm64 machine may also have the armhf one).
 cache=${XDG_CACHE_HOME:-${HOME:?}/.cache}/gty/bin
-app=$cache/gty-$GTY_ID
+app=$cache/gty-$GTY_PLATFORM-$GTY_ID
 if [ ! -x "$app" ]; then
     mkdir -p "$cache" && chmod 700 "$cache" || die "cannot create $cache"
     tmp=$app.tmp.$$
@@ -143,7 +183,7 @@ if [ ! -x "$app" ]; then
         [ "$(sha256sum < "$tmp" | cut -d' ' -f1)" = "$GTY_ID" ] || { rm -f "$tmp"; die "this file is damaged (the embedded app does not match its checksum)"; }
     fi
     chmod 755 "$tmp" && mv -f "$tmp" "$app" || { rm -f "$tmp"; die "cannot write $app"; }
-    for old in "$cache"/gty-*; do
+    for old in "$cache/gty-$GTY_PLATFORM"-*; do
         [ "$old" = "$app" ] || rm -f "$old"
     done
 fi
@@ -234,7 +274,7 @@ if damaged:
 # The fd closes on exec, so ldd reaches it through this process.
 if not os.environ.get("GTY_SKIP_CHECK"):
     out = ldd("/proc/%d/fd/%d" % (os.getpid(), fd))
-    if "not found" in out:
+    if "not found" in out or "Error loading shared library" in out:
         back(__GTY_LDD=out)
 
 try:
