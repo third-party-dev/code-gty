@@ -73,7 +73,7 @@ Then press F5 from the `extension` folder, or start VS Code with `--extensionDev
 
 ## Continuous integration and releases
 
-GitHub Actions builds and tests everything on each push to `main` and each pull request ([.github/workflows/build.yml](.github/workflows/build.yml)):
+GitHub Actions builds and tests everything on each push to the `publish` branch and each pull request into it, and when started by hand ([.github/workflows/build.yml](.github/workflows/build.yml)). Nothing runs for `main`: push or merge into `publish` to build.
 
 | Job | Runs on | Does |
 |---|---|---|
@@ -85,7 +85,7 @@ GitHub Actions builds and tests everything on each push to `main` and each pull 
 
 The arm64 runners are free for public repositories only, so a private repository runs the x64 jobs alone.
 
-A tag `vX.Y.Z` matching `extension/package.json` runs [.github/workflows/release.yml](.github/workflows/release.yml): the whole build, then a **draft** GitHub release with every VSIX and app file and a combined `SHA256SUMS`, then publishing to the VS Code Marketplace (`VSCE_PAT`, for VS Code) and Open VSX (`OVSX_PAT`, for VSCodium, code-server and Coder). Publishing runs in the `marketplace` environment, so required reviewers can be added to approve it.
+A tag `vX.Y.Z` matching `extension/package.json`, on a commit of `publish`, runs [.github/workflows/release.yml](.github/workflows/release.yml): the whole build, then a **draft** GitHub release with every VSIX and app file and a combined `SHA256SUMS`, then publishing to the VS Code Marketplace (`VSCE_PAT`, for VS Code) and Open VSX (`OVSX_PAT`, for VSCodium, code-server and Coder). Publishing runs in the `marketplace` environment, so required reviewers can be added to approve it.
 
 | Secret | For |
 |---|---|

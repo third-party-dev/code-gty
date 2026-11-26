@@ -2,7 +2,9 @@
 # VS Code, VSCodium and code-server), and the native app for Linux, Alpine,
 # Windows and macOS. Linux and Windows are built in Docker, as locally
 # (Dockerfile); macOS is built on macOS, with Apple's toolchain. Runs on
-# pushes and pull requests, and from release.yml for tags.
+# pushes to the `publish` branch and pull requests into it (nothing on
+# `main`), by hand (Actions > build > Run workflow), and from release.yml
+# for tags.
 #
 # Artifacts:
 #   vsix                  the eight VSIXes and SHA256SUMS
@@ -18,8 +20,9 @@ name: build
 
 on:
   push:
-    branches: [main]
+    branches: [publish]
   pull_request:
+    branches: [publish]
   workflow_dispatch:
   workflow_call:
     secrets:

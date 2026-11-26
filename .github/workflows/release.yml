@@ -1,8 +1,9 @@
-# Release: for a tag vX.Y.Z (the version in extension/package.json), builds
-# and tests everything (build.yml), makes a draft GitHub release with every
-# file, and publishes the extension.
+# Release: for a tag vX.Y.Z (the version in extension/package.json) on a
+# commit of the `publish` branch, builds and tests everything (build.yml),
+# makes a draft GitHub release with every file, and publishes the extension.
 #
-#   git tag v0.1.0 && git push origin v0.1.0
+#   git push origin main:publish        # or merge into publish
+#   git tag v0.1.0 origin/publish && git push origin v0.1.0
 #
 # Publishing the extension:
 #   VS Code Marketplace   secret VSCE_PAT   (VS Code)
@@ -26,7 +27,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Tags are not tied to a branch: only release commits that are on `publish`.
+  on-publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: The tagged commit is on the publish branch
+        run: |
+          git fetch --no-tags origin publish
+          git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD || {
+            echo "$GITHUB_REF_NAME ($GITHUB_SHA) is not on the publish branch"; exit 1; }
+
   build:
+    needs: on-publish
     uses: ./.github/workflows/build.yml
     secrets: inherit
 
