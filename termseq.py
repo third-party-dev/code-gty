@@ -21,6 +21,8 @@ Selecting tests
   termseq.py width graphics       a group name expands to its tests
   termseq.py --list               list test ids and groups
   termseq.py -m exec -u           unattended: run only automated tests, skip ones needing a person
+  termseq.py -m exec perf         efficiency: time how fast the terminal processes output (not
+                                  run by default; --perf-mib, --perf-repeat, --perf-scrollback)
 
 Notes
   * Automated queries are followed by a DA1 request ("ESC [ c"). Every terminal
@@ -819,6 +821,267 @@ reg("kitty_keyboard_query", "input", "Kitty keyboard protocol: support query",
                         lambda m, b: (PASS, f"supported, active flags = {m.group(1)}")),
     reply="CSI ? flags u")
 
+# ---- perf (efficiency) ----------------------------------------------------- #
+# How long a terminal takes to process output. Each workload is generated
+# first (not timed), then written, followed by a DA1 request: a terminal
+# handles its input in order, so the DA1 reply arrives once everything before
+# it has been processed. The DA1 round trip itself (perf_latency) is measured
+# and subtracted. This measures processing, not painting: a terminal that
+# redraws asynchronously (VS Code's xterm.js, code-gty's web view, most GPU
+# terminals at their frame rate) may still be drawing when the reply comes.
+PERF_MIB = 4.0          # --perf-mib
+PERF_REPEAT = 3         # --perf-repeat
+PERF_SCROLLBACK = False  # --perf-scrollback: scrolling workloads on the main screen
+PERF_TIMEOUT = 300.0
+PERF_LATENCY_SAMPLES = 30
+_perf_baseline: Optional[float] = None
+
+
+def _perf_round_trip(timeout: float) -> Optional[float]:
+    """Seconds from sending DA1 to its reply, or None without one."""
+    with Cbreak():
+        flush_input()
+        start = time.perf_counter()
+        out(CSI + "c")
+        buf, deadline = "", start + timeout
+        while time.perf_counter() < deadline:
+            buf += read_some(deadline - time.perf_counter())
+            if DA1_RE.search(buf):
+                return time.perf_counter() - start
+        return None
+
+
+def _perf_latency() -> Tuple[Optional[float], List[float]]:
+    """Median DA1 round trip (and the samples); cached for the workloads."""
+    global _perf_baseline
+    samples = []
+    for _ in range(PERF_LATENCY_SAMPLES):
+        t = _perf_round_trip(QUERY_TIMEOUT)
+        if t is None:
+            return None, samples
+        samples.append(t)
+    samples.sort()
+    _perf_baseline = samples[len(samples) // 2]
+    return _perf_baseline, samples
+
+
+def _perf_write(payload: bytes, setup: str, teardown: str) -> Optional[float]:
+    """Write payload and a DA1 request; seconds until the reply (None on timeout)."""
+    fd = sys.stdout.fileno()
+    with Cbreak():
+        flush_input()
+        out(setup)
+        start = time.perf_counter()
+        view = memoryview(payload)
+        while view:
+            n = os.write(fd, view[:1 << 16])   # blocks while the terminal falls behind
+            view = view[n:]
+        os.write(fd, (CSI + "c").encode())
+        buf, deadline, took = "", start + PERF_TIMEOUT, None
+        while time.perf_counter() < deadline:
+            buf += read_some(min(1.0, deadline - time.perf_counter()))
+            if DA1_RE.search(buf):
+                took = time.perf_counter() - start
+                break
+        out(teardown)
+        flush_input()
+        return took
+
+
+def _perf_size() -> Tuple[int, int]:
+    try:
+        sz = os.get_terminal_size(sys.stdout.fileno())
+        return sz.columns, sz.lines
+    except OSError:
+        return 80, 24
+
+
+def _perf_fill(make_chunk: Callable[[], bytes]) -> bytes:
+    """Repeat a generated chunk up to PERF_MIB MiB."""
+    target, parts, size = int(PERF_MIB * (1 << 20)), [], 0
+    while size < target:
+        c = make_chunk()
+        parts.append(c)
+        size += len(c)
+    return b"".join(parts)
+
+
+def _perf_lines(rng, words: List[str], cols: int) -> bytes:
+    """Log-like lines of words, up to the screen width (no wrapping)."""
+    lines = []
+    for _ in range(2000):
+        line, width = [], 0
+        limit = rng.randint(cols // 3, max(cols // 3 + 1, cols - 1))
+        while True:
+            w = rng.choice(words)
+            if width + len(w) + 1 > limit:   # display width approximated by length
+                break
+            line.append(w)
+            width += len(w) + 1
+        lines.append(" ".join(line))
+    return ("\r\n".join(lines) + "\r\n").encode("utf-8")
+
+
+def _perf_ascii_payload(cols: int, rows: int, rng) -> bytes:
+    words = ["INFO", "DEBUG", "WARN", "request", "id=4f2a9c", "took", "12ms", "GET", "/api/v1/items",
+             "200", "user=alice", "cache", "miss", "db.query", "rows=42", "2026-11-26T10:15:02Z",
+             "worker-3", "ok", "retry", "connection", "established", "payload", "bytes=1024"]
+    return _perf_fill(lambda: _perf_lines(rng, words, cols))
+
+
+def _perf_unicode_payload(cols: int, rows: int, rng) -> bytes:
+    # Two-cell words count twice, so lines stay within the width.
+    words = ["naïve", "café", "é", "über", "日本語", "中文", "한국어", "😀", "👍🏽", "🇩🇪",
+             "Ελληνικά", "Кириллица", "→", "✓", "", "äö", "テスト"]
+    wide = {"日本語": 6, "中文": 4, "한국어": 6, "😀": 2, "👍🏽": 2, "🇩🇪": 2, "テスト": 6}
+
+    def chunk() -> bytes:
+        lines = []
+        for _ in range(2000):
+            line, width, limit = [], 0, rng.randint(cols // 3, max(cols // 3 + 1, cols - 1))
+            while True:
+                w = rng.choice(words)
+                cells = wide.get(w, 1 if w in ("é", "→", "✓", "") else len(w))
+                if width + cells + 1 > limit:
+                    break
+                line.append(w)
+                width += cells + 1
+            lines.append(" ".join(line))
+        return ("\r\n".join(lines) + "\r\n").encode("utf-8")
+    return _perf_fill(chunk)
+
+
+def _perf_sgr_payload(cols: int, rows: int, rng) -> bytes:
+    """Every word in its own colour: 256-colour and truecolour, bold, underline."""
+    words = ["fn", "let", "mut", "self", "return", "match", "Some", "None", "String", "Vec", "impl",
+             "pub", "struct", "=>", "&", "::", "(", ")", "{", "}", "0x1f", "\"text\"", "// note"]
+
+    def sgr() -> str:
+        k = rng.random()
+        if k < 0.4:
+            return f"{CSI}38;5;{rng.randint(16, 231)}m"
+        if k < 0.8:
+            return f"{CSI}38;2;{rng.randint(0, 255)};{rng.randint(0, 255)};{rng.randint(0, 255)}m"
+        return f"{CSI}{rng.choice(['1', '3', '4', '7', '1;4'])};38;5;{rng.randint(16, 231)}m"
+
+    def chunk() -> bytes:
+        lines = []
+        for _ in range(1000):
+            parts, width, limit = [], 0, rng.randint(cols // 3, max(cols // 3 + 1, cols - 1))
+            while True:
+                w = rng.choice(words)
+                if width + len(w) + 1 > limit:
+                    break
+                parts.append(f"{sgr()}{w}{CSI}0m")
+                width += len(w) + 1
+            lines.append(" ".join(parts))
+        return ("\r\n".join(lines) + "\r\n").encode("utf-8")
+    return _perf_fill(chunk)
+
+
+def _perf_frames(cols: int, rows: int, rng, sync: bool) -> bytes:
+    """Full-screen redraws, as a TUI (htop, a dashboard) does: each frame moves
+    the cursor to every row and rewrites it in colour; with `sync` each frame
+    is a synchronized update (mode 2026), drawn at once by terminals that know it."""
+    def frame() -> bytes:
+        parts = [f"{CSI}?2026h" if sync else ""]
+        for y in range(1, rows + 1):
+            bar = rng.randint(0, max(1, cols - 20))
+            parts.append(f"{CSI}{y};1H{CSI}38;5;{rng.randint(16, 231)}m{y:4d} "
+                         f"{CSI}48;5;{rng.randint(16, 231)}m{' ' * bar}{CSI}0m{CSI}K")
+        parts.append(f"{CSI}?2026l" if sync else "")
+        return "".join(parts).encode()
+    return _perf_fill(frame)
+
+
+def perf_test(make: Callable, scrolls: bool) -> Callable[[], Result]:
+    """Time a workload: best and median of PERF_REPEAT runs, minus the DA1 round trip."""
+    def run() -> Result:
+        import random
+        import statistics
+        if _perf_baseline is None and _perf_latency()[0] is None:
+            return ERROR, "terminal never answered DA1; cannot time anything (tmux? not a tty?)"
+        cols, rows = _perf_size()
+        payload = make(cols, rows, random.Random(2026))   # the same bytes for the same size
+        main = scrolls and PERF_SCROLLBACK
+        setup = f"{CSI}?25l" + ("" if main else f"{CSI}?1049h{CSI}H{CSI}2J")
+        teardown = f"{CSI}0m{CSI}?2026l{CSI}?25h" + ("\r\n" if main else f"{CSI}?1049l")
+        times = []
+        for i in range(PERF_REPEAT):
+            out(f"\r  {'running:':<9} run {i + 1}/{PERF_REPEAT} ...")
+            took = _perf_write(payload, setup, teardown)
+            if took is None:
+                return ERROR, f"no DA1 reply within {PERF_TIMEOUT:.0f} s"
+            times.append(max(took - (_perf_baseline or 0.0), 1e-6))
+        out("\r" + CSI + "2K")
+        mib = len(payload) / (1 << 20)
+        best, med = min(times), statistics.median(times)
+        where = "main screen" if main else "alternate screen"
+        return PASS, (f"{mib:.1f} MiB in {best:.3f} s best, {med:.3f} s median = "
+                      f"{mib / best:.1f} MiB/s ({cols}x{rows}, {where})")
+    return run
+
+
+def _perf_latency_test() -> Result:
+    import statistics
+    med, samples = _perf_latency()
+    if med is None:
+        return ERROR, "terminal never answered DA1 (tmux? not a tty?)"
+    return PASS, (f"DA1 round trip {med * 1000:.2f} ms median, {samples[0] * 1000:.2f} ms best, "
+                  f"{samples[-1] * 1000:.2f} ms worst ({len(samples)} samples, "
+                  f"stdev {statistics.pstdev(samples) * 1000:.2f} ms)")
+
+
+_PERF_NOTE = ("Times the terminal's processing: the DA1 reply after the workload comes once the terminal "
+              "has parsed everything before it (the DA1 round trip is subtracted). Painting may finish later "
+              "in terminals that redraw asynchronously. The same bytes in every terminal of the same size (fixed "
+              "seed; lines and frames fit the screen); best and median of --perf-repeat runs.")
+
+reg("perf_latency", "perf", "Round-trip latency (DA1)",
+    "Measurement, not a sequence: how quickly the terminal answers a query.",
+    f"{CSI}c",
+    f"Sends DA1 {PERF_LATENCY_SAMPLES} times and times each reply: the floor for any query/response, and the baseline "
+    "subtracted from the workloads below. Includes the PTY, any multiplexer, and (for VS Code) the "
+    "extension host.",
+    "automated", _perf_latency_test, reply="CSI ? Ps ; ... c")
+
+reg("perf_ascii", "perf", "Throughput: plain text (cat a log)",
+    "Measurement. Like `cat` of a large log file.",
+    "<--perf-mib MiB of ASCII log lines, CR LF> CSI c",
+    "Lines of plain ASCII words within the screen width, scrolling continuously. " + _PERF_NOTE,
+    "automated", perf_test(_perf_ascii_payload, scrolls=True), reply="CSI ? Ps ; ... c")
+
+reg("perf_unicode", "perf", "Throughput: Unicode text",
+    "Measurement. Mixed scripts, wide characters, emoji and combining marks.",
+    "<--perf-mib MiB of mixed-script lines> CSI c",
+    "Lines mixing accented Latin, Greek, Cyrillic, CJK, Hangul, emoji (with skin tone and flag), "
+    "combining marks and a Nerd Font glyph: exercises UTF-8 decoding, width lookup and grapheme "
+    "clustering. " + _PERF_NOTE,
+    "automated", perf_test(_perf_unicode_payload, scrolls=True), reply="CSI ? Ps ; ... c")
+
+reg("perf_sgr", "perf", "Throughput: dense colour (SGR)",
+    "Measurement. Like syntax-highlighted output, `ls --color`, compiler diagnostics.",
+    "<--perf-mib MiB of lines with an SGR per word> CSI c",
+    "Every word with its own 256-colour or truecolour foreground (some bold, italic, underlined, "
+    "inverse), reset after it: exercises the CSI parser and style storage. " + _PERF_NOTE,
+    "automated", perf_test(_perf_sgr_payload, scrolls=True), reply="CSI ? Ps ; ... c")
+
+reg("perf_cursor", "perf", "Throughput: full-screen redraws (TUI)",
+    "Measurement. Like htop, a dashboard, or an editor repainting.",
+    "<--perf-mib MiB of frames: CUP to each row, coloured text, EL> CSI c",
+    "Repeated frames that move the cursor to every row and rewrite it with colours, in the alternate "
+    "screen; no scrolling. " + _PERF_NOTE,
+    "automated", perf_test(lambda c, r, g: _perf_frames(c, r, g, sync=False), scrolls=False),
+    reply="CSI ? Ps ; ... c")
+
+reg("perf_sync", "perf", "Throughput: full-screen redraws, synchronized (mode 2026)",
+    "Measurement. The same frames as perf_cursor, each wrapped in CSI ? 2026 h ... CSI ? 2026 l.",
+    "<--perf-mib MiB of frames, each in CSI ? 2026 h ... l> CSI c",
+    "As perf_cursor, but each frame is a synchronized update: terminals that support mode 2026 may "
+    "skip drawing intermediate states, so compare with perf_cursor. " + _PERF_NOTE,
+    "automated", perf_test(lambda c, r, g: _perf_frames(c, r, g, sync=True), scrolls=False),
+    reply="CSI ? Ps ; ... c")
+
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
@@ -894,7 +1157,7 @@ def select_tests(names: List[str]) -> List[T]:
 
 
 def main() -> int:
-    global USE_COLOR
+    global USE_COLOR, PERF_MIB, PERF_REPEAT, PERF_SCROLLBACK
     ap = argparse.ArgumentParser(description="Document and test terminal escape sequences.",
                                  formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog="examples:\n  termseq.py --list\n  termseq.py --mode info osc8 osc133\n"
@@ -907,7 +1170,15 @@ def main() -> int:
                     help="exec mode without prompts: run automated tests only; observed and interactive "
                          "tests are reported as SKIP (needs a person)")
     ap.add_argument("--no-color", action="store_true")
+    ap.add_argument("--perf-mib", type=float, default=PERF_MIB, metavar="MIB",
+                    help=f"perf tests: workload size in MiB (default {PERF_MIB:g})")
+    ap.add_argument("--perf-repeat", type=int, default=PERF_REPEAT, metavar="N",
+                    help=f"perf tests: runs per workload, best and median reported (default {PERF_REPEAT})")
+    ap.add_argument("--perf-scrollback", action="store_true",
+                    help="perf tests: run the scrolling workloads on the main screen (fills scrollback) "
+                         "instead of the alternate screen")
     args = ap.parse_args()
+    PERF_MIB, PERF_REPEAT, PERF_SCROLLBACK = max(args.perf_mib, 0.01), max(args.perf_repeat, 1), args.perf_scrollback
 
     USE_COLOR = sys.stdout.isatty() and not args.no_color and "NO_COLOR" not in os.environ
 
@@ -920,7 +1191,8 @@ def main() -> int:
             print(f"  {t.id:<22} {t.kind:<12} {t.title}")
         return 0
 
-    tests = select_tests(args.tests) if args.tests else list(REGISTRY)
+    # The perf group floods the terminal with megabytes: only when asked for.
+    tests = select_tests(args.tests) if args.tests else [t for t in REGISTRY if t.group != "perf"]
     execute = args.mode == "exec"
 
     if execute:
@@ -967,7 +1239,7 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except KeyboardInterrupt:
-        out(f"{CSI}?1004l{CSI}?1006l{CSI}?1000l{CSI}?2004l{CSI}<u{CSI}0 q{CSI}?25h\n")
+        out(f"{CSI}?1004l{CSI}?1006l{CSI}?1000l{CSI}?2004l{CSI}<u{CSI}0 q{CSI}0m{CSI}?2026l{CSI}?1049l{CSI}?25h\n")
         sys.exit(130)
 
 
