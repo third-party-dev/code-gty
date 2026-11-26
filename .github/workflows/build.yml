@@ -50,6 +50,13 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Free disk space (the runner's unused SDKs; the Docker builds need tens of GB)
+        run: |
+          df -h / && free -h
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /usr/share/swift /usr/local/share/powershell /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force > /dev/null
+          df -h /
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: docker build --target ci
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -59,6 +66,9 @@ jobs:
           outputs: type=local,dest=ci-out
           cache-from: type=gha,scope=ci
           cache-to: type=gha,mode=max,scope=ci
+      - name: Disk and memory after the build
+        if: always()
+        run: df -h / && free -h
 
   # The VSIXes, the Linux and Windows apps, and the page the macOS app embeds.
   docker:
@@ -66,6 +76,13 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Free disk space (the runner's unused SDKs; the Docker builds need tens of GB)
+        run: |
+          df -h / && free -h
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /usr/share/swift /usr/local/share/powershell /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force > /dev/null
+          df -h /
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Source date (reproducible archives)
         run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
@@ -243,14 +260,26 @@ jobs:
       - name: Smoke test
         shell: pwsh
         run: |
-          # A GUI-subsystem exe: Start-Process waits for it and keeps its output.
-          $exe = "app\gty-win32-${{ matrix.arch }}.exe"
+          # A GUI-subsystem exe, so run it through .NET's Process: it waits,
+          # keeps the output and reports the exit code (Start-Process -Wait
+          # often leaves ExitCode empty).
+          $exe = (Resolve-Path "app\gty-win32-${{ matrix.arch }}.exe").Path
+          $failed = $false
           foreach ($arg in @('--version', '--selftest')) {
-            $p = Start-Process -FilePath $exe -ArgumentList $arg -Wait -NoNewWindow -PassThru `
-              -RedirectStandardOutput out.txt -RedirectStandardError err.txt
-            Get-Content out.txt, err.txt
-            if ($p.ExitCode -ne 0) { throw "$exe $arg exited $($p.ExitCode)" }
+            $si = New-Object System.Diagnostics.ProcessStartInfo $exe, $arg
+            $si.UseShellExecute = $false
+            $si.RedirectStandardOutput = $true
+            $si.RedirectStandardError = $true
+            $p = [System.Diagnostics.Process]::Start($si)
+            $out = $p.StandardOutput.ReadToEndAsync()
+            $err = $p.StandardError.ReadToEndAsync()
+            if (-not $p.WaitForExit(60000)) { $p.Kill(); Write-Host "gty ${arg}: timed out"; $failed = $true; continue }
+            Write-Host "gty $arg -> exit $($p.ExitCode)"
+            Write-Host "stdout:"; Write-Host $out.Result
+            Write-Host "stderr:"; Write-Host $err.Result
+            if ($p.ExitCode -ne 0) { $failed = $true }
           }
+          if ($failed) { exit 1 }
 
   # The arm64 Linux app end to end on a real arm64 machine (Docker runs it
   # only under qemu, and only --selftest): the window, the web view, typing
