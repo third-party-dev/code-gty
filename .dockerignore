@@ -11,3 +11,4 @@ extension/*.LEGAL.txt
 dist
 .git
 PLAN.pdf
+app/assets

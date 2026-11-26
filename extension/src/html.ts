@@ -7,9 +7,15 @@ export interface HtmlInput {
   media: (file: string) => string;
   /** Extra script injected before the bundle (tests only). */
   preludeScript?: string;
+  /** The bundle to load (the native app's page bundles the host too). */
+  script?: string;
+  /** Stylesheets loaded after webview.css (the native app's theme). */
+  styles?: string[];
+  /** More sources the page may connect to (the native app's WebSocket). */
+  connectSrc?: string;
 }
 
-export function renderTerminalHtml({ cspSource, nonce, media, preludeScript }: HtmlInput): string {
+export function renderTerminalHtml({ cspSource, nonce, media, preludeScript, script = 'webview.js', styles = [], connectSrc }: HtmlInput): string {
   const csp = [
     "default-src 'none'",
     `img-src ${cspSource} data:`,
@@ -17,7 +23,7 @@ export function renderTerminalHtml({ cspSource, nonce, media, preludeScript }: H
     `style-src ${cspSource} 'nonce-${nonce}'`,
     // libghostty-vt is WebAssembly, and callbacks are tiny generated modules: 'wasm-unsafe-eval'.
     `script-src 'nonce-${nonce}' 'wasm-unsafe-eval'`,
-    `connect-src ${cspSource}`,
+    `connect-src ${cspSource}${connectSrc ? ` ${connectSrc}` : ''}`,
   ].join('; ');
   const prelude = preludeScript ? `<script nonce="${nonce}">${preludeScript}</script>\n` : '';
   return `<!DOCTYPE html>
@@ -27,7 +33,7 @@ export function renderTerminalHtml({ cspSource, nonce, media, preludeScript }: H
 <meta http-equiv="Content-Security-Policy" content="${csp}">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="${media('webview.css')}" nonce="${nonce}">
-</head>
+${styles.map((f) => `<link rel="stylesheet" href="${media(f)}" nonce="${nonce}">\n`).join('')}</head>
 <body data-wasm="${media('ghostty-vt.wasm')}">
 <div id="terminal" role="application" aria-label="Terminal"></div>
 <div id="find" class="find" hidden>
@@ -39,7 +45,7 @@ export function renderTerminalHtml({ cspSource, nonce, media, preludeScript }: H
 </div>
 <div id="notice" class="notice" hidden></div>
 <div id="a11y" class="sr-only" aria-live="polite" role="log"></div>
-${prelude}<script nonce="${nonce}" src="${media('webview.js')}"></script>
+${prelude}<script nonce="${nonce}" src="${media(script)}"></script>
 </body>
 </html>`;
 }

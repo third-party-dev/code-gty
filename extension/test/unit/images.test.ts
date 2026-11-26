@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import { deflateSync } from 'node:zlib';
 import { HostEngine } from '../../src/engine/hostEngine';
 import { classifyDcs, classifyImageOsc, itermPlacement, kittyCommands, parseItermArgs } from '../../src/engine/imageBridge';
-import type { DecodeRequest, DecodedImage } from '../../src/sidecar';
+import type { DecodeRequest, DecodedImage } from '../../src/core/sidecarClient';
 import { KittyImages } from '../../vt/kitty';
 import { loadVtSync } from '../../vt/loader';
 import { RenderState } from '../../vt/render';

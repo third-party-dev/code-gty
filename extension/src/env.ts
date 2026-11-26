@@ -4,6 +4,8 @@
 
 export type EnvMap = Record<string, string>;
 export type EnvPatch = Record<string, string | null | undefined>;
+/** The host's environment (process.env, or what the native app passes its page). */
+export type HostEnv = Record<string, string | undefined>;
 
 export interface VariableContext {
   workspaceFolder?: string;
@@ -59,7 +61,7 @@ const STRIP_EXACT = new Set([
 /** VSCODE_* variables that terminals do get: the CLI hook and git helpers. */
 const KEEP_VSCODE = [/^VSCODE_IPC_HOOK_CLI$/, /^VSCODE_GIT_/, /^VSCODE_SHELL_LOGIN$/];
 
-export function sanitizeHostEnv(env: NodeJS.ProcessEnv): EnvMap {
+export function sanitizeHostEnv(env: HostEnv): EnvMap {
   const out: EnvMap = {};
   for (const [k, v] of Object.entries(env)) {
     if (v === undefined) continue;
@@ -71,8 +73,9 @@ export function sanitizeHostEnv(env: NodeJS.ProcessEnv): EnvMap {
 }
 
 export interface EnvInput {
-  hostEnv: NodeJS.ProcessEnv;
-  platform: NodeJS.Platform;
+  hostEnv: HostEnv;
+  /** As Node names it: 'linux', 'darwin', 'win32', ... */
+  platform: string;
   /** terminal.integrated.inheritEnv (only meaningful on macOS and Linux). */
   inheritEnv: boolean;
   term: string;

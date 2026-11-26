@@ -34,7 +34,8 @@ export function injectShellIntegration(
   args: string[],
   scriptsDir: string,
   env: Record<string, string>,
-  platform: NodeJS.Platform,
+  /** As Node names it: 'linux', 'darwin', 'win32', ... */
+  platform: string,
 ): Injection | undefined {
   const kind = shellKind(command);
   const p = platform === 'win32' ? path.win32 : path.posix;

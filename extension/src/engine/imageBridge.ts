@@ -7,7 +7,8 @@
 // both engines draw the same image. This file holds the protocol details;
 // hostEngine.ts does the stream handling.
 
-import type { DecodedImage } from '../sidecar';
+import type { DecodedImage } from '../core/sidecarClient';
+import { encodeBase64 } from '../shared/base64';
 
 // ---- recognising the sequences -------------------------------------------------
 
@@ -109,7 +110,7 @@ const ST = '\x1b\\';
 const CHUNK = 4096;
 
 function b64(bytes: Uint8Array): string {
-  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64');
+  return encodeBase64(bytes);
 }
 
 /** One transmission, split into chunks: the keys go on the first chunk only. */

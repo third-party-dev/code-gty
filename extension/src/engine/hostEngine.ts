@@ -17,7 +17,7 @@
 import { Vt } from '../../vt/core';
 import { mode } from '../../vt/terminal';
 import { restoreSnapshot } from '../../vt/snapshot';
-import type { DecodedImage, DecodeRequest } from '../sidecar';
+import type { DecodedImage, DecodeRequest } from '../core/sidecarClient';
 import { KittyNotification, KittyNotifications, KittyOutcome } from './kittyNotify';
 import { classifyDcs, classifyImageOsc, itermPlacement, kittyCommands, parseItermArgs } from './imageBridge';
 import { format, selectOutput } from '../../vt/selection';
@@ -33,6 +33,7 @@ import {
   UnknownSequence,
   GHOSTTY_MODE_DEFAULTS,
 } from '../../vt/terminal';
+import { decodeBase64 } from '../shared/base64';
 
 const OSC_START = 1 << 5;
 const DCS_START = 1 << 3;
@@ -481,7 +482,7 @@ export class HostEngine {
     const args = parseItermArgs(argText);
     // inline=0 asks to download the file; a terminal tab has nowhere to put it.
     if (!args.inline) return;
-    const data = new Uint8Array(Buffer.from(base64, 'base64'));
+    const data = decodeBase64(base64);
     if (!data.length) return;
     this.decode({ kind: 'file', data }, args);
   }

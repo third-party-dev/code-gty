@@ -93,7 +93,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM rust-base AS sidecar-src
 WORKDIR /src/sidecar
 COPY sidecar/Cargo.toml sidecar/Cargo.lock ./
-RUN mkdir src && echo 'fn main() {}' > src/main.rs \
+RUN mkdir src && echo 'fn main() {}' > src/main.rs && touch src/lib.rs \
  && cargo fetch --locked && rm -rf src
 COPY sidecar/ ./
 
@@ -132,6 +132,75 @@ RUN set -eux; \
       done; \
     done; \
     find /out -type f | sort
+
+# ---------------------------------------------------------------------------
+# Native app (app/): the terminal page in the system web view, linked with
+# the sidecar. Linux build here, against WebKitGTK 4.1 (a system library at
+# run time: libwebkit2gtk-4.1-0).
+#   docker build --target app-out --output type=local,dest=dist/app .
+# ---------------------------------------------------------------------------
+FROM ${RUST_IMAGE} AS app-build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev \
+ && rm -rf /var/lib/apt/lists/* \
+ && rustup component add clippy
+ARG BUILD_ID=0.1.0
+ENV GTY_BUILD_ID=${BUILD_ID} CARGO_INCREMENTAL=0 \
+    RUSTFLAGS="--remap-path-prefix=/src=. --remap-path-prefix=/usr/local/cargo=cargo"
+WORKDIR /src
+COPY sidecar/ sidecar/
+COPY app/Cargo.toml app/Cargo.lock app/
+COPY app/src app/src
+COPY extension/shell-integration extension/shell-integration
+COPY --from=webview /src/extension/media extension/media
+COPY --from=webview /src/app/assets app/assets
+WORKDIR /src/app
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo clippy --locked --release -- -D warnings \
+ && cargo build --locked --release \
+ && mkdir -p /out && cp target/release/gty /out/gty \
+ && ls -l /out/gty && ldd /out/gty | grep -E 'webkit|gtk|soup|javascriptcore'
+
+# The one-file gty: the launcher script (app/gty.sh) with the app appended,
+# gzipped. It runs the app from memory (or from ~/.cache/gty/bin without Python),
+# after checking for the system libraries and saying how to install them.
+FROM ${DEBIAN_IMAGE} AS app-pack
+COPY --from=app-build /out/gty /in/gty
+COPY app/gty.sh app/pack.sh /src/
+RUN sh -n /src/gty.sh && mkdir -p /out && /src/pack.sh /in/gty /out/gty && ls -l /out/gty
+
+FROM scratch AS app-out
+COPY --from=app-pack /out/gty /
+
+# The launcher where WebKitGTK is missing: it names the packages and exits
+# 127, both from the cache (no Python here) and from memory.
+FROM ${DEBIAN_IMAGE} AS test-app-deps
+COPY --from=app-out /gty /usr/local/bin/gty
+COPY app/test/deps.sh /test/deps.sh
+RUN /test/deps.sh cache \
+ && apt-get update && apt-get install -y --no-install-recommends python3-minimal \
+ && rm -rf /var/lib/apt/lists/* "$HOME/.cache/gty" \
+ && /test/deps.sh memory \
+ && touch /tmp/app-deps-ok
+
+# The real app under Xvfb: page, web view, bridge, daemon and a PTY. Run
+# from memory, then from the cache.
+FROM ${DEBIAN_IMAGE} AS test-app
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libwebkit2gtk-4.1-0 python3-minimal xvfb xauth xdotool imagemagick fonts-dejavu-core procps \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=app-out /gty /usr/local/bin/gty
+COPY app/test/run.sh /test/run.sh
+RUN useradd -m tester
+USER tester
+RUN OUT=/tmp/out xvfb-run -a -s "-screen 0 1280x800x24" /test/run.sh \
+ && test ! -e "$HOME/.cache/gty/bin" \
+ && OUT=/tmp/out-cache GTY_NO_MEMFD=1 xvfb-run -a -s "-screen 0 1280x800x24" /test/run.sh \
+ && ls "$HOME"/.cache/gty/bin/gty-* \
+ && touch /tmp/app-ok
+
+FROM scratch AS test-app-out
+COPY --from=test-app /tmp/out /
 
 # Dev container image (.devcontainer): the Rust/Zig builder plus Node.
 FROM rust-base AS dev
@@ -231,6 +300,8 @@ COPY --from=test-portability-debian /portability-debian-ok /ok/
 COPY --from=test-portability-alpine /portability-alpine-ok /ok/
 COPY --from=test-webview /webview-ok /ok/
 COPY --from=test-integration /tmp/integration-ok /ok/
+COPY --from=test-app /tmp/app-ok /ok/
+COPY --from=test-app-deps /tmp/app-deps-ok /ok/
 COPY --from=package /dist/SHA256SUMS /ok/
 
 # ---------------------------------------------------------------------------

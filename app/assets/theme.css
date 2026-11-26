@@ -1,0 +1,147 @@
+/* The native app's theme: the --vscode-* variables VS Code gives its
+   webviews, with VS Code's Dark Modern and Light Modern colours, so the
+   terminal page (webview.css, term/theme.ts) looks the same as in VS Code.
+   codeGty.colors in the settings file overrides the terminal colours. */
+
+:root {
+  --vscode-font-family: system-ui, -apple-system, 'Segoe UI', Ubuntu, sans-serif;
+  --vscode-font-size: 13px;
+  --vscode-terminal-background: #181818;
+  --vscode-terminal-foreground: #cccccc;
+  --vscode-terminalCursor-foreground: #cccccc;
+  --vscode-terminal-selectionBackground: #264f78;
+  --vscode-terminal-findMatchBackground: #9e6a03;
+  --vscode-terminal-findMatchHighlightBackground: #623315;
+  --vscode-terminal-ansiBlack: #000000;
+  --vscode-terminal-ansiRed: #cd3131;
+  --vscode-terminal-ansiGreen: #0dbc79;
+  --vscode-terminal-ansiYellow: #e5e510;
+  --vscode-terminal-ansiBlue: #2472c8;
+  --vscode-terminal-ansiMagenta: #bc3fbc;
+  --vscode-terminal-ansiCyan: #11a8cd;
+  --vscode-terminal-ansiWhite: #e5e5e5;
+  --vscode-terminal-ansiBrightBlack: #666666;
+  --vscode-terminal-ansiBrightRed: #f14c4c;
+  --vscode-terminal-ansiBrightGreen: #23d18b;
+  --vscode-terminal-ansiBrightYellow: #f5f543;
+  --vscode-terminal-ansiBrightBlue: #3b8eea;
+  --vscode-terminal-ansiBrightMagenta: #d670d6;
+  --vscode-terminal-ansiBrightCyan: #29b8db;
+  --vscode-terminal-ansiBrightWhite: #e5e5e5;
+  --vscode-editorWidget-background: #202020;
+  --vscode-editorWidget-foreground: #cccccc;
+  --vscode-editorWidget-border: #454545;
+  --vscode-widget-shadow: rgba(0, 0, 0, .36);
+  --vscode-input-background: #313131;
+  --vscode-input-foreground: #cccccc;
+  --vscode-input-border: #3c3c3c;
+  --vscode-focusBorder: #0078d4;
+  --vscode-toolbar-hoverBackground: rgba(90, 93, 94, .31);
+  --vscode-errorForeground: #f85149;
+  --vscode-button-background: #0078d4;
+  --vscode-button-foreground: #ffffff;
+  --vscode-button-secondaryBackground: #313131;
+  --vscode-notificationsWarningIcon-foreground: #cca700;
+  --vscode-scrollbarSlider-background: rgba(121, 121, 121, .4);
+  --vscode-scrollbarSlider-hoverBackground: rgba(100, 100, 100, .7);
+  --vscode-scrollbarSlider-activeBackground: rgba(191, 191, 191, .4);
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --vscode-terminal-background: #f8f8f8;
+    --vscode-terminal-foreground: #3b3b3b;
+    --vscode-terminalCursor-foreground: #005fb8;
+    --vscode-terminal-selectionBackground: #add6ff;
+    --vscode-terminal-findMatchBackground: #a8ac94;
+    --vscode-terminal-findMatchHighlightBackground: #ea5c0055;
+    --vscode-terminal-ansiBlack: #000000;
+    --vscode-terminal-ansiRed: #cd3131;
+    --vscode-terminal-ansiGreen: #107c10;
+    --vscode-terminal-ansiYellow: #949800;
+    --vscode-terminal-ansiBlue: #0451a5;
+    --vscode-terminal-ansiMagenta: #bc05bc;
+    --vscode-terminal-ansiCyan: #0598bc;
+    --vscode-terminal-ansiWhite: #555555;
+    --vscode-terminal-ansiBrightBlack: #666666;
+    --vscode-terminal-ansiBrightRed: #cd3131;
+    --vscode-terminal-ansiBrightGreen: #14ce14;
+    --vscode-terminal-ansiBrightYellow: #b5ba00;
+    --vscode-terminal-ansiBrightBlue: #0451a5;
+    --vscode-terminal-ansiBrightMagenta: #bc05bc;
+    --vscode-terminal-ansiBrightCyan: #0598bc;
+    --vscode-terminal-ansiBrightWhite: #a5a5a5;
+    --vscode-editorWidget-background: #f8f8f8;
+    --vscode-editorWidget-foreground: #3b3b3b;
+    --vscode-editorWidget-border: #c8c8c8;
+    --vscode-widget-shadow: rgba(0, 0, 0, .16);
+    --vscode-input-background: #ffffff;
+    --vscode-input-foreground: #3b3b3b;
+    --vscode-input-border: #cecece;
+    --vscode-focusBorder: #005fb8;
+    --vscode-toolbar-hoverBackground: rgba(184, 184, 184, .31);
+    --vscode-errorForeground: #f85149;
+    --vscode-button-background: #005fb8;
+    --vscode-button-foreground: #ffffff;
+    --vscode-button-secondaryBackground: #e5e5e5;
+    --vscode-notificationsWarningIcon-foreground: #bf8803;
+    --vscode-scrollbarSlider-background: rgba(100, 100, 100, .4);
+    --vscode-scrollbarSlider-hoverBackground: rgba(100, 100, 100, .7);
+    --vscode-scrollbarSlider-activeBackground: rgba(0, 0, 0, .6);
+    color-scheme: light;
+  }
+}
+
+html, body { background: var(--vscode-terminal-background); }
+
+/* Messages (native/ui.ts), in place of VS Code's notifications and dialogs. */
+.gty-toasts {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(460px, calc(100vw - 24px));
+  z-index: 20;
+}
+.gty-message {
+  background: var(--vscode-editorWidget-background);
+  color: var(--vscode-editorWidget-foreground);
+  border: 1px solid var(--vscode-editorWidget-border);
+  border-left: 3px solid var(--vscode-focusBorder);
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow);
+  border-radius: 4px;
+  padding: 10px 12px;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.gty-message.gty-warning { border-left-color: var(--vscode-notificationsWarningIcon-foreground); }
+.gty-message-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.gty-message-buttons { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.gty-message button {
+  font: inherit;
+  padding: 3px 10px;
+  border: none;
+  border-radius: 2px;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  cursor: pointer;
+}
+.gty-message button.gty-message-close { background: var(--vscode-button-secondaryBackground); color: var(--vscode-editorWidget-foreground); }
+.gty-message button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+.gty-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 30;
+  padding: 16px;
+}
+.gty-overlay .gty-message { max-width: 460px; }

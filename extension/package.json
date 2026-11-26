@@ -187,7 +187,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "watch": "node scripts/build.mjs --watch",
-    "typecheck": "tsc -p . --noEmit && tsc -p webview --noEmit && tsc -p test --noEmit",
+    "typecheck": "tsc -p . --noEmit && tsc -p webview --noEmit && tsc -p native --noEmit && tsc -p test --noEmit",
     "lint": "eslint .",
     "test:unit": "node --import tsx --test test/unit/*.test.ts",
     "test:conformance": "node --import tsx --test test/conformance/*.test.ts",

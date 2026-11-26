@@ -32,6 +32,8 @@ export interface KittyNotifyHost {
   focus(): void;
 }
 
+import { decodeBase64 } from '../shared/base64';
+
 const ID = /^[A-Za-z0-9\-_+.]+$/;
 /** Values the spec allows in metadata (libghostty-vt's set: identifiers plus a few symbols). */
 const VALUE = /^[A-Za-z0-9\-_+./,(){}[\]*&^%$#@!`~=?]*$/;
@@ -112,7 +114,7 @@ export class KittyNotifications {
 
     if (meta.get('e') === '1') {
       try {
-        payload = Buffer.from(payload, 'base64').toString('utf8');
+        payload = new TextDecoder().decode(decodeBase64(payload));
       } catch {
         return;
       }

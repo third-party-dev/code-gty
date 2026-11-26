@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { HostEngine } from '../../src/engine/hostEngine';
 import { encodeFrame, FrameDecoder, Kind } from '../../src/protocol';
+import type { SidecarClient as Sidecar } from '../../src/core/sidecarClient';
 import { Claimed, SessionListener, SidecarClient } from '../../src/sidecar';
 import { loadVtSync } from '../../vt/loader';
 import { format } from '../../vt/selection';
@@ -21,7 +22,7 @@ const WASM = process.env.GTY_VT_WASM ?? join(__dirname, '..', '..', 'media', 'gh
 const mod = new WebAssembly.Module(readFileSync(WASM));
 const ENV = { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: tmpdir(), TERM: 'xterm-256color', LANG: 'C.UTF-8', PS1: '$ ' };
 const dir = mkdtempSync(join(tmpdir(), 'gty-daemon-'));
-const clients: SidecarClient[] = [];
+const clients: Sidecar[] = [];
 after(async () => {
   // End the daemon: kill every session, then it exits when idle (or we leave it to the OS).
   const c = await window();
@@ -29,7 +30,7 @@ after(async () => {
   for (const x of clients) x.dispose();
 });
 
-async function window(): Promise<SidecarClient> {
+async function window(): Promise<Sidecar> {
   const c = SidecarClient.forDaemon({ binary: BIN!, dir, vt: WASM });
   clients.push(c);
   await c.start();
@@ -45,7 +46,7 @@ async function until(cond: () => boolean, ms = 10000, what = 'condition'): Promi
 }
 
 /** A window's view of a session: a host engine fed its output, as the extension does. */
-function attach(c: SidecarClient, id: number, from?: Claimed) {
+function attach(c: Sidecar, id: number, from?: Claimed) {
   const vt = loadVtSync(mod);
   let consumed = 0;
   const opts = { cols: 60, rows: 12, scrollbackLines: 1000, colors: {}, cursorStyle: 'block' as const, cursorBlink: false, xtversion: 'x', answerback: '', clipboard: 'write' as const };

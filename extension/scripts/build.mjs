@@ -3,8 +3,9 @@
 // the module itself, media/ghostty-vt.wasm, is built by vt-wasm/build.sh
 // (the Docker vt-wasm stage) and is checked here against the bindings'
 // generated layout.
+import { Buffer } from 'node:buffer';
 import { execFileSync } from 'node:child_process';
-import { existsSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
@@ -61,11 +62,42 @@ const webview = {
   target: ['chrome114', 'firefox115', 'safari16.4'],
 };
 
+// The native app's page (app/): the same terminal page, plus the session
+// host that runs in the page there (native/). Written into app/assets for
+// the Rust build to embed.
+const appAssets = join(root, '..', 'app', 'assets');
+const native = {
+  ...webview,
+  entryPoints: [join(root, 'native', 'app.ts')],
+  outfile: join(appAssets, 'app.js'),
+  // The shared shell code needs a little of node:path (native/path.ts).
+  alias: { 'node:path': join(root, 'native', 'path.ts') },
+};
+
+async function writeAppPage() {
+  mkdirSync(appAssets, { recursive: true });
+  const { outputFiles } = await esbuild.build({ entryPoints: [join(root, 'src', 'html.ts')], bundle: true, format: 'esm', platform: 'neutral', write: false });
+  const { renderTerminalHtml } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString('base64')}`);
+  const html = renderTerminalHtml({
+    // Assets come from the app's own scheme; the page talks to the daemon
+    // through its WebSocket bridge on loopback.
+    cspSource: "'self'",
+    connectSrc: 'ws://127.0.0.1:*',
+    nonce: 'gty-native',
+    media: (f) => f,
+    script: 'app.js',
+    styles: ['theme.css'],
+  });
+  writeFileSync(join(appAssets, 'index.html'), html);
+  copyFileSync(join(root, 'native', 'theme.css'), join(appAssets, 'theme.css'));
+}
+
 if (watch) {
-  const ctxs = await Promise.all([esbuild.context(host), esbuild.context(webview)]);
+  await writeAppPage();
+  const ctxs = await Promise.all([esbuild.context(host), esbuild.context(webview), esbuild.context(native)]);
   await Promise.all(ctxs.map((c) => c.watch()));
 } else {
-  await Promise.all([esbuild.build(host), esbuild.build(webview)]);
+  await Promise.all([esbuild.build(host), esbuild.build(webview), esbuild.build(native), writeAppPage()]);
   const size = statSync(webview.outfile).size;
   if (size > WEBVIEW_BUDGET) {
     console.error(`webview.js is ${size} bytes, over the ${WEBVIEW_BUDGET} byte budget`);

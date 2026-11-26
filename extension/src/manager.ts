@@ -6,8 +6,10 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import type { UnknownSequence } from '../vt/terminal';
 import { EnvPatch } from './env';
-import { CreateOptions, SessionHost, TerminalSession } from './session';
+import type { Platform } from './core/platform';
+import { CreateOptions, SessionHost, TerminalSession, vscodePlatform } from './session';
 import { defaultDaemonDir } from './daemon';
+import type { SidecarClient as Sidecar } from './core/sidecarClient';
 import { SessionInfo, SidecarClient } from './sidecar';
 import { locateSidecar } from './sidecarBinary';
 import { affectsWebview, LaunchPlan, planLaunch } from './terminalConfig';
@@ -17,8 +19,8 @@ import { PersistedState } from './shared/messages';
 export const VIEW_TYPE = 'codeGty.terminal';
 
 export class TerminalManager implements SessionHost, vscode.WebviewPanelSerializer<PersistedState> {
-  private client: SidecarClient | undefined;
-  private starting: Promise<SidecarClient> | undefined;
+  private client: Sidecar | undefined;
+  private starting: Promise<Sidecar> | undefined;
   private readonly sessions = new Set<TerminalSession>();
   private active: TerminalSession | undefined;
   private readonly contributed = new Map<string, EnvPatch>();
@@ -34,12 +36,14 @@ export class TerminalManager implements SessionHost, vscode.WebviewPanelSerializ
   private module: WebAssembly.Module | undefined;
   private readonly statusItem: vscode.StatusBarItem;
   private closing = false;
+  readonly platform: Platform;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     readonly log: vscode.LogOutputChannel,
   ) {
     this.extensionUri = context.extensionUri;
+    this.platform = vscodePlatform(log);
     this.extensionVersion = String((context.extension?.packageJSON as { version?: string } | undefined)?.version ?? '0.0.0');
     this.statusItem = vscode.window.createStatusBarItem('codeGty.programStatus', vscode.StatusBarAlignment.Left, 50);
     this.statusItem.name = 'Ghostty Program Status';
@@ -62,7 +66,7 @@ export class TerminalManager implements SessionHost, vscode.WebviewPanelSerializ
 
   // ---- SessionHost -------------------------------------------------------
 
-  sidecar(): Promise<SidecarClient> {
+  sidecar(): Promise<Sidecar> {
     if (this.client && !this.client.isDead) return Promise.resolve(this.client);
     if (this.starting) return this.starting;
     this.starting = (async () => {
@@ -77,7 +81,7 @@ export class TerminalManager implements SessionHost, vscode.WebviewPanelSerializ
           if (this.client === client) this.client = undefined;
         },
       };
-      const client = this.persistentSessions
+      const client: Sidecar = this.persistentSessions
         ? SidecarClient.forDaemon({ ...options, binary: bin.path, dir: defaultDaemonDir(), vt: this.vtPath })
         : new SidecarClient(bin.path, options);
       const hello = await client.start();

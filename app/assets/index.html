@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; font-src 'self'; style-src 'self' 'nonce-gty-native'; script-src 'nonce-gty-native' 'wasm-unsafe-eval'; connect-src 'self' ws://127.0.0.1:*">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="webview.css" nonce="gty-native">
+<link rel="stylesheet" href="theme.css" nonce="gty-native">
+</head>
+<body data-wasm="ghostty-vt.wasm">
+<div id="terminal" role="application" aria-label="Terminal"></div>
+<div id="find" class="find" hidden>
+  <input id="find-input" type="text" placeholder="Find" aria-label="Find in terminal" spellcheck="false">
+  <span id="find-count" class="find-count" aria-live="polite"></span>
+  <button id="find-prev" title="Previous match (Shift+Enter)" aria-label="Previous match">&#8593;</button>
+  <button id="find-next" title="Next match (Enter)" aria-label="Next match">&#8595;</button>
+  <button id="find-close" title="Close (Escape)" aria-label="Close find">&#215;</button>
+</div>
+<div id="notice" class="notice" hidden></div>
+<div id="a11y" class="sr-only" aria-live="polite" role="log"></div>
+<script nonce="gty-native" src="app.js"></script>
+</body>
+</html>
