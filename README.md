@@ -85,7 +85,7 @@ GitHub Actions builds and tests everything on each push to the `publish` branch 
 
 The arm64 runners are free for public repositories only, so a private repository runs the x64 jobs alone.
 
-A tag `vX.Y.Z` matching `extension/package.json`, on a commit of `publish`, runs [.github/workflows/release.yml](.github/workflows/release.yml): the whole build, then a **draft** GitHub release with every VSIX and app file and a combined `SHA256SUMS`, then publishing to the VS Code Marketplace (`VSCE_PAT`, for VS Code) and Open VSX (`OVSX_PAT`, for VSCodium, code-server and Coder). Publishing runs in the `marketplace` environment, so required reviewers can be added to approve it.
+A tag `vX.Y.Z` on a commit of `publish` releases that version ([.github/workflows/release.yml](.github/workflows/release.yml), steps below): a **draft** GitHub release with every file, and the extension published to the VS Code Marketplace (for VS Code) and Open VSX (for VSCodium, code-server and Coder).
 
 | Secret | For |
 |---|---|
@@ -93,6 +93,59 @@ A tag `vX.Y.Z` matching `extension/package.json`, on a commit of `publish`, runs
 | `OVSX_PAT` | Open VSX (skipped when unset) |
 | `MACOS_CERTIFICATE`, `MACOS_CERTIFICATE_PASSWORD` | a Developer ID Application certificate (`.p12`, base64) to sign the macOS app |
 | `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` | notarizing it (an app-specific password) |
+
+### Release flow
+
+**Once, before the first release**
+
+1. Set the real `publisher` and `repository` in `extension/package.json` (they are placeholders, see the decisions below), and create the publisher on the [VS Code Marketplace](https://marketplace.visualstudio.com/manage) and a namespace of the same name on [Open VSX](https://open-vsx.org).
+2. Create the `publish` branch: `git push origin main:publish`. Protecting it (Settings > Branches: pull requests only, the `build` checks required) makes every release go through a reviewed, green build.
+3. Add the secrets from the table above (Settings > Secrets and variables > Actions). Each one is optional; without them that step is skipped.
+4. Create the `marketplace` environment (Settings > Environments) and add yourself as a required reviewer, so that publishing waits for an approval. Limiting its deployment tags to `v*` keeps anything else out.
+5. Keep the workflow files on `main` as well: GitHub only offers **Run workflow** for workflows on the default branch. Nothing on `main` runs them.
+
+**Each release**
+
+1. On `main`, set the new version in all three places, and refresh the lock files:
+
+   ```sh
+   (cd extension && npm version 0.2.0 --no-git-tag-version)        # package.json and package-lock.json
+   sed -i 's/^version = ".*"/version = "0.2.0"/' app/Cargo.toml sidecar/Cargo.toml
+   (cd sidecar && cargo update -p gty-sidecar --offline)
+   (cd app && cargo update -p gty -p gty-sidecar --offline)
+   docker build --target ci .
+   ```
+
+   `release.yml` checks the tag against `extension/package.json`. The Cargo versions are the app's `--version`, and the app unpacks its files into a directory named after its version.
+2. Commit, and bring it to `publish` (a pull request from `main`, or `git push origin main:publish`). `build.yml` runs; its run page has every file as an artifact (`vsix`, `app-linux-windows`, `app-darwin`).
+3. Run [docs/release-checklist.md](docs/release-checklist.md) on real machines with those files.
+4. Tag the commit on `publish` and push the tag:
+
+   ```sh
+   git fetch origin publish
+   git tag -a v0.2.0 -m "code-gty 0.2.0" origin/publish
+   git push origin v0.2.0
+   ```
+
+5. `release.yml` then:
+   1. checks that the tagged commit is on `publish`;
+   2. builds and tests everything again;
+   3. makes a draft GitHub release of the tag, with every VSIX and app file and one `SHA256SUMS`;
+   4. waits for approval in the `marketplace` environment, then publishes the eight VSIXes to the VS Code Marketplace and Open VSX.
+6. Open the draft (Releases), edit the generated notes, and **Publish release**.
+7. Check the listings: install from the Extensions view in VS Code (Marketplace) and in VSCodium or code-server (Open VSX).
+
+**When something fails**
+
+- **Before the publish job:** fix it on `main`, bring it to `publish`, then delete the draft release and the tag and tag again:
+
+  ```sh
+  git push --delete origin v0.2.0 && git tag -d v0.2.0
+  ```
+
+- **After publishing to a marketplace:** a version cannot be published twice to either marketplace, so release the fix as the next patch version. If only one of them failed (Open VSX after the Marketplace succeeded, say), publish to that one from a local machine with the VSIXes from the run, `npx --yes ovsx@1.3.0 publish code-gty-*.vsix`, because re-running the job would fail on the one already done.
+
+**From a local machine**
 
 Publishing from a local machine still works, with the same files:
 
