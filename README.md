@@ -107,11 +107,14 @@ A tag `vX.Y.Z` on a commit of `publish` releases that version ([.github/workflow
 
 **Each release**
 
-1. On `main`, set the new version in all four places, and refresh the lock files:
+1. On `main`, set the new version in all five places, and refresh the lock files:
 
    ```sh
-   (cd extension && npm version 0.2.0 --no-git-tag-version)        # package.json and package-lock.json
+   # package.json by hand (npm version would rewrite its compact layout), then its lock file:
+   sed -i '0,/"version": ".*"/s//"version": "0.2.0"/' extension/package.json
+   (cd extension && npm install --package-lock-only --ignore-scripts)
    sed -i 's/^version = ".*"/version = "0.2.0"/' app/Cargo.toml app/browser/Cargo.toml sidecar/Cargo.toml
+   sed -i 's/^ARG BUILD_ID=.*/ARG BUILD_ID=0.2.0/' Dockerfile        # the build id in --version and the unpack directory
    (cd sidecar && cargo update -p gty-sidecar --offline)
    (cd app && cargo update -p gty -p gty-sidecar --offline)
    (cd app/browser && cargo update -p gty-browser -p gty-sidecar --offline)

@@ -2,7 +2,7 @@
 name = "gty-browser"
 # Keep in step with app/Cargo.toml: the page's files are unpacked into a
 # directory named after this version.
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "gty's browser mode on Linux: the terminal page in a web browser, for systems without WebKitGTK. Static: links nothing from the system"
 license = "MIT"

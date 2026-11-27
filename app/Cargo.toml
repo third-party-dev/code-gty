@@ -1,6 +1,6 @@
 [package]
 name = "gty"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "code-gty's terminal as a desktop app: the extension's terminal page in the system web view, sharing sessions with VS Code"
 license = "MIT"

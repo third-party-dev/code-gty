@@ -124,7 +124,7 @@ FROM sidecar-check AS sidecar-build
 # "linux" (default) builds the two static musl binaries; "all" adds macOS and Windows.
 ARG SIDECAR_TARGETS=linux
 ARG SOURCE_DATE_EPOCH=0
-ARG BUILD_ID=0.1.0
+ARG BUILD_ID=0.2.0
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} GTY_BUILD_ID=${BUILD_ID} \
     CARGO_INCREMENTAL=0 \
     RUSTFLAGS="--remap-path-prefix=/src/sidecar=. --remap-path-prefix=/usr/local/cargo=cargo"
@@ -174,7 +174,7 @@ COPY --from=webview /src/app/assets /src/app/assets
 # page-payload feature: neither binary has it built in).
 FROM rust-base AS app-browser-static
 RUN rustup target add armv7-unknown-linux-musleabihf
-ARG BUILD_ID=0.1.0
+ARG BUILD_ID=0.2.0
 ENV GTY_BUILD_ID=${BUILD_ID} CARGO_INCREMENTAL=0 \
     RUSTFLAGS="--remap-path-prefix=/src=. --remap-path-prefix=/usr/local/cargo=cargo"
 COPY --from=app-src /src /src
@@ -197,7 +197,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev \
  && rm -rf /var/lib/apt/lists/* \
  && rustup component add clippy
-ARG BUILD_ID=0.1.0
+ARG BUILD_ID=0.2.0
 ENV GTY_BUILD_ID=${BUILD_ID} CARGO_INCREMENTAL=0 \
     RUSTFLAGS="--remap-path-prefix=/src=. --remap-path-prefix=/usr/local/cargo=cargo"
 COPY --from=app-src /src /src
@@ -215,7 +215,7 @@ RUN --mount=type=cache,id=cargo-app-linux-x64,sharing=locked,target=/usr/local/c
 # linux-arm64, linux-armhf: Debian multiarch WebKitGTK and a cross gcc.
 FROM ${RUST_IMAGE} AS app-cross-debian
 COPY app/cross.sh /usr/local/bin/
-ARG BUILD_ID=0.1.0
+ARG BUILD_ID=0.2.0
 ENV GTY_BUILD_ID=${BUILD_ID} CARGO_INCREMENTAL=0 \
     RUSTFLAGS="--remap-path-prefix=/src=. --remap-path-prefix=/usr/local/cargo=cargo"
 
@@ -243,7 +243,7 @@ RUN apk add --no-cache build-base binutils gzip pkgconf clang lld qemu-aarch64 r
  && rustup-init -y --profile minimal --default-toolchain ${RUST_VERSION}
 ENV PATH=/root/.cargo/bin:$PATH
 COPY app/cross.sh /usr/local/bin/
-ARG BUILD_ID=0.1.0
+ARG BUILD_ID=0.2.0
 ENV GTY_BUILD_ID=${BUILD_ID} CARGO_INCREMENTAL=0 \
     RUSTFLAGS="--remap-path-prefix=/src=. --remap-path-prefix=/root/.cargo=cargo"
 
@@ -266,7 +266,7 @@ RUN --mount=type=cache,id=cargo-app-alpine-arm64,sharing=locked,target=/root/.ca
 # win32-x64, win32-arm64: Zig, as the sidecar.
 FROM rust-base AS app-win32
 COPY app/cross.sh /usr/local/bin/
-ARG BUILD_ID=0.1.0
+ARG BUILD_ID=0.2.0
 ENV GTY_BUILD_ID=${BUILD_ID} CARGO_INCREMENTAL=0 \
     RUSTFLAGS="--remap-path-prefix=/src=. --remap-path-prefix=/usr/local/cargo=cargo"
 COPY --from=app-src /src /src
@@ -284,7 +284,7 @@ RUN rustup toolchain install ${RUST_VERSION} --profile minimal --component clipp
  && rustup default ${RUST_VERSION} \
  && (command -v python3 || (apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*))
 COPY app/cross.sh /usr/local/bin/
-ARG BUILD_ID=0.1.0
+ARG BUILD_ID=0.2.0
 ENV GTY_BUILD_ID=${BUILD_ID} CARGO_INCREMENTAL=0 \
     RUSTFLAGS="--remap-path-prefix=/src=. --remap-path-prefix=/usr/local/cargo=cargo"
 COPY --from=app-src /src /src

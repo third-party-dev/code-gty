@@ -2,7 +2,7 @@
   "name": "code-gty",
   "displayName": "code-gty: Ghostty Terminal",
   "description": "A Ghostty-emulated terminal (libghostty-vt) that opens as an editor tab.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "code-gty",
   "license": "MIT",
   "private": true,
