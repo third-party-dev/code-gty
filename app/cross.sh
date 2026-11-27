@@ -90,7 +90,8 @@ build() {
             export "CARGO_TARGET_${TRIPLE_ENV}_LINKER=$gnu-gcc" "CC_$triple_env=$gnu-gcc"
             export PKG_CONFIG_ALLOW_CROSS=1 PKG_CONFIG_SYSROOT_DIR=/ \
                 PKG_CONFIG_LIBDIR="/usr/lib/$gnu/pkgconfig:/usr/share/pkgconfig"
-            cargo build --locked --release --target "$triple"
+            # The launcher carries the page (pack.sh).
+            cargo build --locked --release --features page-payload --target "$triple"
             ;;
         alpine)
             # Linked against the system's musl and libraries (Rust's musl
@@ -106,7 +107,8 @@ build() {
             # (RUSTFLAGS, as Cargo ignores per-target flags when it is set;
             # with --target it does not reach build scripts.)
             export RUSTFLAGS="$flags ${RUSTFLAGS:-}"
-            cargo build --locked --release --target "$triple"
+            # The launcher carries the page (pack.sh).
+            cargo build --locked --release --features page-payload --target "$triple"
             ;;
         windows)
             exe=gty.exe

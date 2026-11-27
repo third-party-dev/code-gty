@@ -1,0 +1,32 @@
+[package]
+name = "gty-browser"
+# Keep in step with app/Cargo.toml: the page's files are unpacked into a
+# directory named after this version.
+version = "0.1.0"
+edition = "2021"
+description = "gty's browser mode on Linux: the terminal page in a web browser, for systems without WebKitGTK. Static: links nothing from the system"
+license = "MIT"
+publish = false
+rust-version = "1.86"
+
+[[bin]]
+name = "gty-browser"
+path = "src/main.rs"
+
+[dependencies]
+gty-sidecar = { path = "../../sidecar", features = ["native"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[features]
+# The Linux builds: the page is not built in; the launcher carries it, once
+# for the app and browser mode (src/assets.rs, pack.sh).
+page-payload = []
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "unwind"

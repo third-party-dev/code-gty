@@ -1,6 +1,6 @@
 # gty in a web browser: Plan
 
-Nov 27, 2026. Status: **decided, not started** (decisions in §6). Nothing in this plan has been built.
+Nov 27, 2026. Status: **built**; §8 lists what is still open (decisions in §6).
 
 This plan adds a second way for the native app, `gty`, to show its terminal: in a web browser the user already has, not in the system web view. It changes nothing in the VS Code and VSCodium extension. On every platform the system web view stays the first choice (WebKitGTK on Linux, WebView2 on Windows, WKWebView on macOS), and the browser is used when that web view is not available, or when the configuration asks for it. See [app/README.md](app/README.md) for the app as it is.
 
@@ -185,3 +185,15 @@ Taken Nov 27, 2026.
 5. Linux launcher and packaging: the second payload, the selection logic, the messages; launcher tests on Debian and Alpine; a static armhf sidecar.
 6. Windows: the WebView2 check at start, `auto` and `--browser`; the GitHub Actions test. macOS: `--browser`.
 7. The keys test, and docs: `app/README.md` (the viewer setting, the lost keys per browser, the shared-machine risk), the root README.
+
+## 8. Open points (after building it)
+
+Nov 27, 2026.
+
+1. **Size: decided, carry the page once.** With the page in both programs each Linux file was about 24 MB (the page is mostly the bundled Nerd Font, about 10 MB of WOFF2, which does not compress further). Now the Linux builds use the `page-payload` feature: neither program has the page built in, and the launcher carries it once, as a third gzip stream after the two programs (app/pack.sh). The program that runs reads it from the launcher file into memory at start (`GTY_PAGE` says where; the program removes it from its environment), so the page is still served from memory, not unpacked to disk. Each Linux file is now about 13.6 MB, about 1.5 MB more than before browser mode. Windows and macOS keep the page built in. A program in `~/.cache/gty/bin` runs only from its launcher, and says so.
+2. **The keys test (§4) cannot be automated.** Playwright sends keys to the page directly, past the browser's own shortcuts, so a test would see every key arrive. The reserved keys listed in app/README.md come from the browsers' documented behaviour, not from a measurement.
+3. **Not run on a real machine yet:**
+   - the default-browser lookup on Windows (registry) and macOS (Launch Services): unit-tested parsers, and GitHub Actions runs browser mode on both, but without starting a browser;
+   - a real browser started by gty: the tests start real Chromium and Firefox themselves (Playwright, with `GTY_BROWSER_NO_LAUNCH`), and test gty's own launching with a stand-in browser that records its command line;
+   - Flatpak and Snap browsers;
+   - the clipboard in browser mode (arboard: X11, or Wayland data-control).

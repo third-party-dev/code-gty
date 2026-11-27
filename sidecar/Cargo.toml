@@ -23,6 +23,15 @@ portable-pty = "0.9.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 wasmi = { version = "2.0.3", default-features = false, features = ["std", "simd", "validate", "auto-dispatch"] }
+# The `native` feature only (see below).
+tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake"], optional = true }
+arboard = { version = "=3.7.0", default-features = false, features = ["wayland-data-control"], optional = true }
+
+[features]
+# The native app's side, for app/ and app/browser/ (not the VSIX sidecar):
+# the daemon client, the page's WebSocket bridge, and browser mode (the page
+# served to a web browser). src/native/.
+native = ["dep:tungstenite", "dep:arboard"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

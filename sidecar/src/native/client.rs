@@ -1,6 +1,7 @@
 //! Finding, starting and connecting to the sidecar daemon: the same steps as
-//! the extension's src/daemon.ts, so the app and VS Code share one daemon
-//! (and so their sessions). The daemon is this binary, `gty --server`.
+//! the extension's src/daemon.ts, so the app, browser mode and VS Code share
+//! one daemon (and so their sessions). The daemon is the running binary
+//! itself, run as `--server`: gty, gty-browser and gty-sidecar all have it.
 
 use serde::Deserialize;
 use std::fs;
@@ -10,9 +11,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Must match PROTOCOL_VERSION in the sidecar and the extension.
-const PROTOCOL: u32 = 2;
-const AUTH: u8 = 17;
+use crate::protocol::{kind, PROTOCOL_VERSION as PROTOCOL};
 
 #[derive(Deserialize)]
 struct State {
@@ -127,7 +126,7 @@ fn connect(state: &State) -> io::Result<Conn> {
     let token = state.token.as_bytes();
     let mut frame = Vec::with_capacity(9 + token.len());
     frame.extend_from_slice(&((5 + token.len()) as u32).to_le_bytes());
-    frame.push(AUTH);
+    frame.push(kind::AUTH);
     frame.extend_from_slice(&0u32.to_le_bytes());
     frame.extend_from_slice(token);
     conn.write_all(&frame)?;
@@ -201,6 +200,16 @@ impl Daemon {
         }
         Err(io::Error::other(format!("the sidecar daemon did not start: {last} (see {})", log_path.display())))
     }
+}
+
+/// Asks the daemon to end session `id` (as Manage Sessions' kill does).
+pub fn kill(conn: &mut Conn, id: u32) -> io::Result<()> {
+    let mut frame = Vec::with_capacity(9);
+    frame.extend_from_slice(&5u32.to_le_bytes());
+    frame.push(kind::KILL);
+    frame.extend_from_slice(&id.to_le_bytes());
+    conn.write_all(&frame)?;
+    conn.flush()
 }
 
 /// Writes `data` to `path` unless it is already there with that content.

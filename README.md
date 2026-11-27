@@ -13,6 +13,7 @@ A VS Code extension that shows a Ghostty-emulated terminal in an editor tab. It 
 | `extension/src/` | Extension host (TypeScript): the VS Code platform and panel view, manager, settings, environment, profiles, links, clipboard, serializer, exported API |
 | `extension/native/` | The native app's page host: the core session with a window view, a native platform and the daemon over a WebSocket (bundled to `app/assets/app.js`) |
 | `app/` | [`gty`](app/README.md), the terminal as a desktop app (Rust: tao + wry, the sidecar linked in as its daemon), one file per platform: Linux (x64, arm64, armhf) and Alpine (x64, arm64) as self-launching scripts, Windows (x64, arm64) as exes |
+| `app/browser/` | `gty-browser`: browser mode for Linux, static, built into each Linux file beside the app, which carries the page once for both (the `page-payload` feature); `sidecar/src/native/` has the code it shares with the app (daemon client, bridge, browser mode) |
 | `extension/src/shared/` | Code used by both the host and the webview: message schema and validation, key pass-through, paste preparation |
 | `extension/term/` | gty-term: the browser terminal on a mirror engine: canvas renderer, sprites, keyboard/IME, mouse, selection, find, links, images |
 | `extension/webview/` | Webview glue (bundled to `media/webview.js`): messages, settings, pass-through keys, clipboard |
@@ -106,17 +107,18 @@ A tag `vX.Y.Z` on a commit of `publish` releases that version ([.github/workflow
 
 **Each release**
 
-1. On `main`, set the new version in all three places, and refresh the lock files:
+1. On `main`, set the new version in all four places, and refresh the lock files:
 
    ```sh
    (cd extension && npm version 0.2.0 --no-git-tag-version)        # package.json and package-lock.json
-   sed -i 's/^version = ".*"/version = "0.2.0"/' app/Cargo.toml sidecar/Cargo.toml
+   sed -i 's/^version = ".*"/version = "0.2.0"/' app/Cargo.toml app/browser/Cargo.toml sidecar/Cargo.toml
    (cd sidecar && cargo update -p gty-sidecar --offline)
    (cd app && cargo update -p gty -p gty-sidecar --offline)
+   (cd app/browser && cargo update -p gty-browser -p gty-sidecar --offline)
    docker build --target ci .
    ```
 
-   `release.yml` checks the tag against `extension/package.json`. The Cargo versions are the app's `--version`, and the app unpacks its files into a directory named after its version.
+   `release.yml` checks the tag against `extension/package.json`. The Cargo versions are the app's (and browser mode's) `--version`, and both unpack their files into a directory named after it.
 2. Commit, and bring it to `publish` (a pull request from `main`, or `git push origin main:publish`). `build.yml` runs; its run page has every file as an artifact (`vsix`, `app-linux-windows`, `app-darwin`).
 3. Run [docs/release-checklist.md](docs/release-checklist.md) on real machines with those files.
 4. Tag the commit on `publish` and push the tag:

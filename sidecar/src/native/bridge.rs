@@ -3,11 +3,12 @@
 //! through unchanged, so the page speaks the same frames as the extension
 //! host (src/core/sidecarClient.ts).
 //!
-//! Only this app's page can use it: the URL carries a random token, and the
-//! Origin must be the app's own scheme (a web page in a browser cannot
-//! forge either).
+//! In the app (`start`), only its page can use it: the URL carries a random
+//! token, and the Origin must be the app's own scheme (a web page in a
+//! browser cannot forge either). Browser mode (browser.rs) checks requests
+//! itself and hands accepted sockets to `pump`.
 
-use crate::daemon::Daemon;
+use super::client::Daemon;
 use std::io::{self, ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -48,6 +49,8 @@ pub fn start(daemon: Arc<Daemon>) -> io::Result<Bridge> {
     Ok(Bridge { url })
 }
 
+// tungstenite's handshake callback fixes the (large) error type.
+#[allow(clippy::result_large_err)]
 fn serve(stream: TcpStream, daemon: &Daemon, token: &str) -> io::Result<()> {
     stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -63,7 +66,14 @@ fn serve(stream: TcpStream, daemon: &Daemon, token: &str) -> io::Result<()> {
             Err(r)
         }
     };
-    let mut ws = tungstenite::accept_hdr(stream, check).map_err(|e| io::Error::other(format!("handshake: {e}")))?;
+    let ws = tungstenite::accept_hdr(stream, check).map_err(|e| io::Error::other(format!("handshake: {e}")))?;
+    ws.get_ref().set_read_timeout(None)?;
+    pump(ws, daemon)
+}
+
+/// Passes bytes both ways between an accepted WebSocket and a new,
+/// authenticated daemon connection, until either side closes.
+pub fn pump<S: Read + Write + Nonblocking>(mut ws: tungstenite::WebSocket<S>, daemon: &Daemon) -> io::Result<()> {
     let mut conn = daemon.connect()?;
     let mut from_daemon = conn.try_clone()?;
 
@@ -84,8 +94,7 @@ fn serve(stream: TcpStream, daemon: &Daemon, token: &str) -> io::Result<()> {
     })?;
 
     // One loop drives the WebSocket both ways: it is not split into halves.
-    ws.get_mut().set_read_timeout(None)?;
-    ws.get_mut().set_nonblocking(true)?;
+    ws.get_mut().nonblocking()?;
     let result = (|| -> io::Result<()> {
         loop {
             let mut busy = false;
@@ -131,7 +140,19 @@ fn serve(stream: TcpStream, daemon: &Daemon, token: &str) -> io::Result<()> {
     result
 }
 
-fn write(ws: &mut tungstenite::WebSocket<TcpStream>, m: Message) -> io::Result<()> {
+/// A socket that can be switched to non-blocking (TcpStream, or browser
+/// mode's stream that first replays the request it has read).
+pub trait Nonblocking {
+    fn nonblocking(&mut self) -> io::Result<()>;
+}
+
+impl Nonblocking for TcpStream {
+    fn nonblocking(&mut self) -> io::Result<()> {
+        self.set_nonblocking(true)
+    }
+}
+
+fn write<S: Read + Write>(ws: &mut tungstenite::WebSocket<S>, m: Message) -> io::Result<()> {
     match ws.write(m) {
         Ok(()) => Ok(()),
         // Queued; the loop flushes it.

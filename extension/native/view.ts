@@ -21,6 +21,8 @@ export class WindowView implements TerminalView {
   set title(t: string) {
     if (t === this.titleText) return;
     this.titleText = t;
+    // The window title: through the app, and the page's own (a browser's).
+    document.title = t || 'Ghostty';
     send({ type: 'title', title: t });
   }
   post(msg: HostToWebview): void {

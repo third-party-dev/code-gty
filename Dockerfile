@@ -107,7 +107,9 @@ COPY sidecar/ ./
 
 FROM sidecar-src AS sidecar-check
 RUN cargo clippy --locked --all-targets -- -D warnings \
+ && cargo clippy --locked --all-targets --features native -- -D warnings \
  && cargo test --locked \
+ && cargo test --locked --features native \
  && touch /sidecar-checked
 
 # Supply-chain audit (licences, advisories, sources). Fetches the advisory
@@ -159,9 +161,35 @@ COPY sidecar/ /src/sidecar/
 COPY app/Cargo.toml app/Cargo.lock app/build.rs /src/app/
 COPY app/src /src/app/src
 COPY app/gty.sh app/pack.sh app/pe-imports.py app/macho-info.py app/macos-app.sh /src/app/
+COPY app/browser/Cargo.toml app/browser/Cargo.lock /src/app/browser/
+COPY app/browser/src /src/app/browser/src
 COPY extension/shell-integration /src/extension/shell-integration
 COPY --from=webview /src/extension/media /src/extension/media
 COPY --from=webview /src/app/assets /src/app/assets
+
+# Browser mode for Linux (app/browser/): the terminal page in a web browser,
+# for systems without WebKitGTK. Static (musl, with Zig, as the sidecar), so
+# it links nothing from the system; packed into each Linux file beside the
+# app (app/pack.sh), which also carries the page once for both (the
+# page-payload feature: neither binary has it built in).
+FROM rust-base AS app-browser-static
+RUN rustup target add armv7-unknown-linux-musleabihf
+ARG BUILD_ID=0.1.0
+ENV GTY_BUILD_ID=${BUILD_ID} CARGO_INCREMENTAL=0 \
+    RUSTFLAGS="--remap-path-prefix=/src=. --remap-path-prefix=/usr/local/cargo=cargo"
+COPY --from=app-src /src /src
+WORKDIR /src/app/browser
+RUN --mount=type=cache,id=cargo-app-browser,sharing=locked,target=/usr/local/cargo/registry \
+    cargo clippy --locked --release -- -D warnings \
+ && cargo clippy --locked --release --features page-payload -- -D warnings \
+ && mkdir -p /out \
+ && for pair in x86_64-unknown-linux-musl:x64 aarch64-unknown-linux-musl:arm64 armv7-unknown-linux-musleabihf:armhf; do \
+      t=${pair%%:*}; a=${pair#*:}; \
+      cargo zigbuild --locked --release --features page-payload --target "$t" && cp "target/$t/release/gty-browser" "/out/gty-browser-$a" || exit 1; \
+      if readelf -l "/out/gty-browser-$a" | grep -q 'program interpreter'; then echo "gty-browser-$a is not static"; exit 1; fi; \
+    done \
+ && rm -rf target \
+ && /out/gty-browser-x64 --version && /out/gty-browser-x64 --selftest && ls -l /out
 
 # linux-x64: native, with clippy.
 FROM ${RUST_IMAGE} AS app-build
@@ -173,14 +201,16 @@ ARG BUILD_ID=0.1.0
 ENV GTY_BUILD_ID=${BUILD_ID} CARGO_INCREMENTAL=0 \
     RUSTFLAGS="--remap-path-prefix=/src=. --remap-path-prefix=/usr/local/cargo=cargo"
 COPY --from=app-src /src /src
+COPY --from=app-browser-static /out/gty-browser-x64 /browser/
 WORKDIR /src/app
 RUN --mount=type=cache,id=cargo-app-linux-x64,sharing=locked,target=/usr/local/cargo/registry \
     sh -n gty.sh \
  && cargo clippy --locked --release -- -D warnings \
- && cargo build --locked --release \
+ && cargo clippy --locked --release --features page-payload -- -D warnings \
+ && cargo build --locked --release --features page-payload \
  && mkdir -p /out && cp target/release/gty /out/gty && rm -rf target \
  && ldd /out/gty | grep -E 'webkit|gtk|soup|javascriptcore' \
- && ./pack.sh /out/gty /out/gty-linux-x64 linux-x64 && ls -l /out
+ && ./pack.sh /out/gty /out/gty-linux-x64 linux-x64 /browser/gty-browser-x64 && ls -l /out
 
 # linux-arm64, linux-armhf: Debian multiarch WebKitGTK and a cross gcc.
 FROM ${RUST_IMAGE} AS app-cross-debian
@@ -192,14 +222,18 @@ ENV GTY_BUILD_ID=${BUILD_ID} CARGO_INCREMENTAL=0 \
 FROM app-cross-debian AS app-linux-arm64
 RUN cross.sh linux-arm64 setup
 COPY --from=app-src /src /src
+COPY --from=app-browser-static /out/gty-browser-arm64 /browser/
 RUN --mount=type=cache,id=cargo-app-linux-arm64,sharing=locked,target=/usr/local/cargo/registry \
-    cross.sh linux-arm64 build && /src/app/pack.sh /out/gty /out/gty-linux-arm64 linux-arm64
+    cross.sh linux-arm64 build && qemu-aarch64 /browser/gty-browser-arm64 --selftest \
+ && /src/app/pack.sh /out/gty /out/gty-linux-arm64 linux-arm64 /browser/gty-browser-arm64
 
 FROM app-cross-debian AS app-linux-armhf
 RUN cross.sh linux-armhf setup
 COPY --from=app-src /src /src
+COPY --from=app-browser-static /out/gty-browser-armhf /browser/
 RUN --mount=type=cache,id=cargo-app-linux-armhf,sharing=locked,target=/usr/local/cargo/registry \
-    cross.sh linux-armhf build && /src/app/pack.sh /out/gty /out/gty-linux-armhf linux-armhf
+    cross.sh linux-armhf build && qemu-arm /browser/gty-browser-armhf --selftest \
+ && /src/app/pack.sh /out/gty /out/gty-linux-armhf linux-armhf /browser/gty-browser-armhf
 
 # alpine-x64 (native), alpine-arm64 (an aarch64 Alpine sysroot and clang).
 FROM ${ALPINE_IMAGE} AS app-cross-alpine
@@ -216,14 +250,18 @@ ENV GTY_BUILD_ID=${BUILD_ID} CARGO_INCREMENTAL=0 \
 FROM app-cross-alpine AS app-alpine-x64
 RUN cross.sh alpine-x64 setup
 COPY --from=app-src /src /src
+COPY --from=app-browser-static /out/gty-browser-x64 /browser/
 RUN --mount=type=cache,id=cargo-app-alpine-x64,sharing=locked,target=/root/.cargo/registry \
-    cross.sh alpine-x64 build && /src/app/pack.sh /out/gty /out/gty-alpine-x64 alpine-x64
+    cross.sh alpine-x64 build && /browser/gty-browser-x64 --selftest \
+ && /src/app/pack.sh /out/gty /out/gty-alpine-x64 alpine-x64 /browser/gty-browser-x64
 
 FROM app-cross-alpine AS app-alpine-arm64
 RUN cross.sh alpine-arm64 setup
 COPY --from=app-src /src /src
+COPY --from=app-browser-static /out/gty-browser-arm64 /browser/
 RUN --mount=type=cache,id=cargo-app-alpine-arm64,sharing=locked,target=/root/.cargo/registry \
-    cross.sh alpine-arm64 build && /src/app/pack.sh /out/gty /out/gty-alpine-arm64 alpine-arm64
+    cross.sh alpine-arm64 build && qemu-aarch64 /browser/gty-browser-arm64 --selftest \
+ && /src/app/pack.sh /out/gty /out/gty-alpine-arm64 alpine-arm64 /browser/gty-browser-arm64
 
 # win32-x64, win32-arm64: Zig, as the sidecar.
 FROM rust-base AS app-win32
@@ -289,7 +327,7 @@ FROM ${DEBIAN_IMAGE} AS test-app-deps
 COPY --from=app-build /out/gty-linux-x64 /usr/local/bin/gty
 COPY --from=app-alpine-x64 /out/gty-alpine-x64 /usr/local/bin/
 COPY --from=app-linux-arm64 /out/gty-linux-arm64 /usr/local/bin/
-COPY app/test/deps.sh /test/deps.sh
+COPY app/test/deps.sh app/test/viewer.sh app/test/fake-browser /test/
 RUN set -e; debian='libwebkit2gtk-4.1.so.0'; \
     /test/deps.sh gty cache "$debian" 'sudo apt install.* libwebkit2gtk-4.1-0' 'sudo dnf install.* webkit2gtk4.1' \
       'sudo pacman -S --needed.* webkit2gtk-4.1' 'sudo zypper install.* libwebkit2gtk-4_1-0'; \
@@ -298,17 +336,19 @@ RUN set -e; debian='libwebkit2gtk-4.1.so.0'; \
     /test/deps.sh gty memory "$debian" 'sudo apt install.* libwebkit2gtk-4.1-0'; \
     /test/deps.sh gty-alpine-x64 wrong 'for Alpine and other musl systems.*needs gty-linux-x64'; \
     /test/deps.sh gty-linux-arm64 wrong 'for aarch64 machines, and this one is x86_64'; \
+    /test/viewer.sh missing; \
     touch /tmp/app-deps-ok
 
 FROM ${ALPINE_IMAGE} AS test-app-deps-alpine
 COPY --from=app-alpine-x64 /out/gty-alpine-x64 /usr/local/bin/gty
 COPY --from=app-build /out/gty-linux-x64 /usr/local/bin/
-COPY app/test/deps.sh /test/deps.sh
+COPY app/test/deps.sh app/test/viewer.sh app/test/fake-browser /test/
 RUN set -e; \
     /test/deps.sh gty cache 'libwebkit2gtk-4.1.so.0' 'apk add.* webkit2gtk-4.1'; \
     apk add --no-cache python3; rm -rf "$HOME/.cache/gty"; \
     /test/deps.sh gty memory 'libwebkit2gtk-4.1.so.0' 'apk add.* webkit2gtk-4.1'; \
     /test/deps.sh gty-linux-x64 wrong 'for glibc systems; this one uses musl (Alpine), so it needs gty-alpine-x64'; \
+    /test/viewer.sh missing; \
     touch /tmp/app-deps-alpine-ok
 
 # The real app under Xvfb: page, web view, bridge, daemon and a PTY. Run
@@ -318,27 +358,47 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libwebkit2gtk-4.1-0 python3-minimal xvfb xauth xdotool xclip imagemagick fonts-dejavu-core procps \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=app-build /out/gty-linux-x64 /usr/local/bin/gty
-COPY app/test/run.sh /test/run.sh
+COPY app/test/run.sh app/test/viewer.sh /test/
+COPY app/test/fake-browser /usr/local/bin/chromium
 RUN useradd -m tester
 USER tester
 RUN OUT=/tmp/out xvfb-run -a -s "-screen 0 1280x800x24" /test/run.sh \
  && test ! -e "$HOME/.cache/gty/bin" \
  && OUT=/tmp/out-cache GTY_NO_MEMFD=1 xvfb-run -a -s "-screen 0 1280x800x24" /test/run.sh \
  && ls "$HOME"/.cache/gty/bin/gty-* \
+ && /test/viewer.sh present \
  && touch /tmp/app-ok
 
 # The same on Alpine, with the musl build.
 FROM ${ALPINE_IMAGE} AS test-app-alpine
 RUN apk add --no-cache webkit2gtk-4.1 python3 xvfb-run xdotool xclip imagemagick font-dejavu procps-ng coreutils
 COPY --from=app-alpine-x64 /out/gty-alpine-x64 /usr/local/bin/gty
-COPY app/test/run.sh /test/run.sh
+COPY app/test/run.sh app/test/viewer.sh /test/
+COPY app/test/fake-browser /usr/local/bin/chromium
 RUN adduser -D tester
 USER tester
 RUN OUT=/tmp/out xvfb-run -a -s "-screen 0 1280x800x24" /test/run.sh \
  && test ! -e "$HOME/.cache/gty/bin" \
  && OUT=/tmp/out-cache GTY_NO_MEMFD=1 xvfb-run -a -s "-screen 0 1280x800x24" /test/run.sh \
  && ls "$HOME"/.cache/gty/bin/gty-* \
+ && /test/viewer.sh present \
  && touch /tmp/app-alpine-ok
+
+# Browser mode end to end: the Linux launcher (gty-linux-x64, browser mode:
+# the static gty-browser, with the page the launcher carries) serves the
+# real page to real Chromium and Firefox (extension/test/browser/), with a real daemon
+# and PTY: typing, a reload that reattaches, the request checks against
+# another origin, and ending with the page.
+FROM ${PLAYWRIGHT_IMAGE} AS test-browser-mode
+WORKDIR /src/extension
+COPY --from=webview /src/extension ./
+COPY --from=app-build /out/gty-linux-x64 /usr/local/bin/gty
+ENV GTY_BROWSER_BIN=/usr/local/bin/gty GTY_VIEWER=browser
+# Chromium with the launcher running browser mode from memory, Firefox from
+# its cache (each reads the page from the launcher).
+RUN GTY_BROWSER=chromium npm run test:browser-mode \
+ && GTY_BROWSER=firefox GTY_NO_MEMFD=1 npm run test:browser-mode \
+ && touch /browser-mode-ok
 
 FROM scratch AS test-app-out
 COPY --from=test-app /tmp/out /
@@ -445,6 +505,7 @@ COPY --from=test-app /tmp/app-ok /ok/
 COPY --from=test-app-deps /tmp/app-deps-ok /ok/
 COPY --from=test-app-deps-alpine /tmp/app-deps-alpine-ok /ok/
 COPY --from=test-app-alpine /tmp/app-alpine-ok /ok/
+COPY --from=test-browser-mode /browser-mode-ok /ok/
 COPY --from=app-pack-linux-windows /out/SHA256SUMS /ok/app-SHA256SUMS
 COPY --from=package /dist/SHA256SUMS /ok/
 

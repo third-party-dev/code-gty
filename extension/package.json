@@ -194,6 +194,7 @@
     "test:webview": "node --import tsx --test --test-concurrency=1 test/webview/*.test.ts",
     "test:integration": "node test/integration/run.mjs",
     "test:e2e": "node --import tsx --test test/e2e/*.test.ts",
+    "test:browser-mode": "node --import tsx --test --test-concurrency=1 test/browser/*.test.ts",
     "package": "vsce package --no-dependencies"
   },
   "devDependencies": {

@@ -1,6 +1,10 @@
-// Messages between the page and the Rust side of the native app (window,
-// clipboard, opening links). Rust calls window.__gtyEvent with events and
-// replies; requests carry an id.
+// Messages between the page and the program showing it (window, clipboard,
+// opening links): the app (Rust) through the web view's window.ipc, which
+// calls window.__gtyEvent with events and replies; or, in browser mode, a
+// WebSocket to the server (/ipc), which also tells it the page is open.
+// Requests carry an id.
+
+import { inBrowser } from './boot';
 
 export type ToRust =
   | { type: 'title'; title: string }
@@ -10,7 +14,9 @@ export type ToRust =
   | { type: 'notify'; title: string; body: string }
   | { type: 'log'; level: 'info' | 'warn' | 'error'; message: string }
   /** Ends the app: the session is closed. */
-  | { type: 'quit' };
+  | { type: 'quit' }
+  /** Browser mode: the page's session, ended by the server if the page goes. */
+  | { type: 'session'; id: number };
 
 export type FromRust =
   | { type: 'reply'; id: number; value: unknown }
@@ -21,8 +27,36 @@ interface Ipc {
   postMessage(message: string): void;
 }
 
+/** Browser mode's socket, and what was sent before it opened. */
+let socket: WebSocket | undefined;
+const queued: string[] = [];
+
+function browserSocket(): WebSocket {
+  if (socket) return socket;
+  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ipc`);
+  ws.onopen = () => {
+    for (const m of queued.splice(0)) ws.send(m);
+  };
+  ws.onmessage = (ev) => receive(JSON.parse(String(ev.data)) as FromRust);
+  ws.onclose = () => console.warn('code-gty: the connection to the terminal server closed');
+  socket = ws;
+  return ws;
+}
+
 export function send(m: ToRust): void {
-  (globalThis as unknown as { ipc: Ipc }).ipc.postMessage(JSON.stringify(m));
+  const text = JSON.stringify(m);
+  if (!inBrowser) {
+    (globalThis as unknown as { ipc: Ipc }).ipc.postMessage(text);
+    return;
+  }
+  const ws = browserSocket();
+  if (ws.readyState === WebSocket.OPEN) ws.send(text);
+  else queued.push(text);
+}
+
+/** Browser mode: opens the socket now (it marks the page as open). */
+export function connect(): void {
+  if (inBrowser) browserSocket();
 }
 
 let nextId = 1;
@@ -48,7 +82,7 @@ export function onClose(fn: () => void): void {
   closeHandlers.push(fn);
 }
 
-(globalThis as unknown as { __gtyEvent: (e: FromRust) => void }).__gtyEvent = (e) => {
+function receive(e: FromRust): void {
   if (e.type === 'reply') {
     const w = waiting.get(e.id);
     waiting.delete(e.id);
@@ -56,4 +90,6 @@ export function onClose(fn: () => void): void {
   } else if (e.type === 'close') {
     for (const fn of closeHandlers) fn();
   }
-};
+}
+
+(globalThis as unknown as { __gtyEvent: (e: FromRust) => void }).__gtyEvent = receive;

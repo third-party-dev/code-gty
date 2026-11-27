@@ -13,13 +13,12 @@ path = "src/main.rs"
 
 [dependencies]
 # The sidecar, linked in: `gty --server` is the session daemon, the same one
-# the VS Code extension uses.
-gty-sidecar = { path = "../sidecar" }
-getrandom = "0.3"
+# the VS Code extension uses. Its `native` feature has the daemon client, the
+# page's bridge and browser mode (shared with app/browser/).
+gty-sidecar = { path = "../sidecar", features = ["native"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tao = "=0.37.2"
-tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake"] }
 wry = "=0.57.2"
 
 # The clipboard (src/clipboard.rs): GTK's where the window is GTK's (the gtk
@@ -32,6 +31,11 @@ arboard = { version = "=3.7.0", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[features]
+# The Linux builds: the page is not built in; the launcher carries it, once
+# for the app and browser mode (src/assets.rs, pack.sh).
+page-payload = []
 
 [profile.release]
 opt-level = "s"

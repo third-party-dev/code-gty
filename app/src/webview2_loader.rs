@@ -23,6 +23,24 @@ pub fn set_dir(dir: PathBuf) {
     let _ = DIR.set(dir);
 }
 
+#[link(name = "ole32")]
+extern "system" {
+    fn CoTaskMemFree(p: *mut c_void);
+}
+
+/// Whether the WebView2 runtime is installed: the loader reports its
+/// version, or fails when there is none.
+pub fn runtime_available() -> bool {
+    let mut version: *mut u16 = std::ptr::null_mut();
+    // SAFETY: a null folder (the installed runtime) and a place for the string.
+    let hr = unsafe { GetAvailableCoreWebView2BrowserVersionString(std::ptr::null(), &mut version) };
+    if !version.is_null() {
+        // SAFETY: the loader allocates the string with CoTaskMemAlloc.
+        unsafe { CoTaskMemFree(version.cast()) };
+    }
+    hr >= 0 && !version.is_null()
+}
+
 #[link(name = "kernel32")]
 extern "system" {
     fn LoadLibraryW(name: *const u16) -> *mut c_void;
@@ -45,7 +63,7 @@ fn module() -> Result<*mut c_void, i32> {
             return Err(hresult(0));
         };
         let path = dir.join("WebView2Loader.dll");
-        if let Err(e) = crate::daemon::write_once(&path, DLL) {
+        if let Err(e) = gty_sidecar::native::client::write_once(&path, DLL) {
             eprintln!("[gty] cannot write {}: {e}", path.display());
             return Err(hresult(e.raw_os_error().unwrap_or(0) as u32));
         }

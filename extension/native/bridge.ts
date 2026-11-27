@@ -5,12 +5,30 @@
 
 import type { Disposable } from '../src/core/platform';
 import type { HostToWebview, PersistedState } from '../src/shared/messages';
+import { inBrowser } from './boot';
+import { send } from './ipc';
 
 type Listener = (m: unknown) => void;
 const listeners = new Set<Listener>();
 /** What the page posted before the host was listening (its 'ready', say). */
 const early: unknown[] = [];
-let state: PersistedState | undefined;
+/** In a browser, the tab's sessionStorage keeps it across a reload, so the
+ *  reloaded page reattaches to its session (as a VS Code reload does). */
+const STATE_KEY = 'code-gty-state';
+let state: PersistedState | undefined = inBrowser ? readState() : undefined;
+
+function readState(): PersistedState | undefined {
+  try {
+    return JSON.parse(sessionStorage.getItem(STATE_KEY) ?? 'null') ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The state the page saved (before this load, in a browser). */
+export function savedState(): PersistedState | undefined {
+  return state;
+}
 
 (globalThis as unknown as { acquireVsCodeApi: () => unknown }).acquireVsCodeApi = () => ({
   postMessage(m: unknown) {
@@ -23,6 +41,14 @@ let state: PersistedState | undefined;
   getState: () => state,
   setState: (s: PersistedState) => {
     state = s;
+    if (!inBrowser) return;
+    try {
+      sessionStorage.setItem(STATE_KEY, JSON.stringify(s));
+    } catch {
+      // Storage off: a reload starts a new shell.
+    }
+    // The server ends it if the page goes for good.
+    if (s.sessionId) send({ type: 'session', id: s.sessionId });
   },
 });
 

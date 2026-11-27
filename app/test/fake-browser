@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""A stand-in web browser for the launcher's tests (app/test/viewer.sh).
+Records how gty started it (/tmp/fake-browser.args), then does what a page
+does to the server: fetches some of the page's files (their status and size
+in /tmp/fake-browser.page), opens /ipc with the page's origin, which counts
+as the page being open, and closes it again. Installed as chromium, firefox or
+another name, so gty's browser lookup finds it on PATH."""
+import base64, os, socket, sys, time
+
+args = sys.argv[1:]
+with open("/tmp/fake-browser.args", "w") as f:
+    f.write(os.path.basename(sys.argv[0]) + "\n" + "\n".join(args) + "\n")
+url = next((a[len("--app="):] for a in args if a.startswith("--app=")), args[-1])
+host_port = url.split("//", 1)[1].split("/", 1)[0]
+host, port = host_port.rsplit(":", 1)
+
+def fetch(path):
+    c = socket.create_connection((host, int(port)))
+    c.sendall(("GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n" % (path, host_port)).encode())
+    data = b""
+    while True:
+        chunk = c.recv(1 << 16)
+        if not chunk:
+            break
+        data += chunk
+    c.close()
+    head, _, body = data.partition(b"\r\n\r\n")
+    return "%s %s %d" % (path, head.split(b" ")[1].decode(), len(body))
+
+with open("/tmp/fake-browser.page", "w") as f:
+    for path in ("/", "/app.js", "/ghostty-vt.wasm", "/fonts/IosevkaTermNerdFontMono-Regular.woff2"):
+        f.write(fetch(path) + "\n")
+
+s = socket.create_connection((host, int(port)))
+key = base64.b64encode(os.urandom(16)).decode()
+s.sendall((
+    "GET /ipc HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+    "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\nOrigin: http://%s\r\n\r\n" % (host_port, key, host_port)
+).encode())
+status = s.recv(4096).decode("latin-1").split("\r\n", 1)[0]
+with open("/tmp/fake-browser.status", "w") as f:
+    f.write(status + "\n")
+time.sleep(0.5)
+s.close()

@@ -11,3 +11,31 @@
 git push origin main:publish                              # or merge main into publish
 git tag v0.1.0 origin/publish && git push origin v0.1.0
 ```
+
+- coder-server notifications no worky, could they notify within code-server (not desktop)?
+- bump the version to 0.2.0
+
+- github-release failed:
+
+```
+Run rm -rf artifacts/app-page   # build input, not a release file
+  rm -rf artifacts/app-page   # build input, not a release file
+  mkdir release
+  for d in artifacts/*; do (cd "$d" && sha256sum -c SHA256SUMS); done
+  find artifacts -type f ! -name SHA256SUMS -exec cp {} release/ \;
+  (cd release && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
+  shell: /usr/bin/bash -e {0}
+gty-darwin-arm64: OK
+gty-darwin-arm64.app.zip: OK
+gty-darwin-x64: OK
+gty-darwin-x64.app.zip: OK
+gty-alpine-arm64: OK
+gty-alpine-x64: OK
+gty-linux-arm64: OK
+gty-linux-armhf: OK
+gty-linux-x64: OK
+gty-win32-arm64.exe: OK
+gty-win32-x64.exe: OK
+sha256sum: SHA256SUMS: No such file or directory
+Error: Process completed with exit code 1.
+```

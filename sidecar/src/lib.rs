@@ -14,6 +14,8 @@
 //! VS Code.
 
 mod decode;
+#[cfg(feature = "native")]
+pub mod native;
 mod procinfo;
 mod protocol;
 mod replay;
