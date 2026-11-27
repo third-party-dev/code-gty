@@ -56,12 +56,22 @@ jobs:
         run: |
           version=$(node -p 'require("./extension/package.json").version')
           test "$GITHUB_REF_NAME" = "v$version" || { echo "tag $GITHUB_REF_NAME, but extension/package.json says $version"; exit 1; }
+      # By name: the run has other artifacts too (docker/build-push-action's
+      # build records, the app's page), which are not release files.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          path: artifacts
+          name: vsix
+          path: artifacts/vsix
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: app-linux-windows
+          path: artifacts/app-linux-windows
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: app-darwin
+          path: artifacts/app-darwin
       - name: Collect and check
         run: |
-          rm -rf artifacts/app-page   # build input, not a release file
           mkdir release
           for d in artifacts/*; do (cd "$d" && sha256sum -c SHA256SUMS); done
           find artifacts -type f ! -name SHA256SUMS -exec cp {} release/ \;

@@ -41,6 +41,9 @@ concurrency:
 
 env:
   RUST_VERSION: "1.91.1"   # as RUST_IMAGE in the Dockerfile
+  # docker/build-push-action would upload each build's record as an artifact
+  # of its own (*.dockerbuild); the job summary still shows the builds.
+  DOCKER_BUILD_RECORD_UPLOAD: "false"
 
 jobs:
   # Every Docker test: unit, conformance, the web view in three browsers, VS
